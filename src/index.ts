@@ -12,6 +12,7 @@ import { handleSocial } from "./routes/social.ts";
 import { handleProvision } from "./routes/admin.ts";
 import { checkRateLimit } from "./utils/rate-limit.ts";
 import { hashToken } from "./utils/auth.ts";
+import { fetchUserTier } from "./db.ts";
 
 // ── 环境变量类型声明（与 wrangler.toml bindings 一一对应）──
 export interface Env {
@@ -25,6 +26,10 @@ export interface Env {
   ADMIN_KEY: string;
   /** Vercel Webhook URL，扣分后用于将新余额同步写回 Supabase */
   VERCEL_WEBHOOK_URL: string;
+  /** Supabase 项目 URL */
+  SUPABASE_URL: string;
+  /** Supabase 匿名 Key */
+  SUPABASE_ANON_KEY: string;
 }
 
 // ── 路由表：路径 → 对应的技能处理函数 ──────────────────────
@@ -105,7 +110,15 @@ async function handleUserRequest(
 
   // ── 1.5. 速率限制检查 (Rate Limiting) ────────────────────
   const tokenHash = await hashToken(token);
-  const userTier = (await env.UNISKILL_KV.get(`tier:${tokenHash}`)) || "FREE";
+
+  // 先尝试从 KV 获取档位，KV 没有则查 DB 并回写 KV（缓存 1 小时）
+  let userTier = await env.UNISKILL_KV.get(`tier:${tokenHash}`);
+
+  if (!userTier) {
+    userTier = await fetchUserTier(token, env);
+    // 缓存到 KV，减少对 Supabase 的直接并发查询
+    ctx.waitUntil(env.UNISKILL_KV.put(`tier:${tokenHash}`, userTier, { expirationTtl: 3600 }));
+  }
 
   const rateLimit = await checkRateLimit(tokenHash, userTier, env.UNISKILL_KV);
 

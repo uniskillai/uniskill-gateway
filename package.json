@@ -17,5 +17,8 @@
     "@cloudflare/workers-types": "^4.20260305.0",
     "typescript": "^5.9.3",
     "wrangler": "^4.69.0"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.98.0"
   }
 }
