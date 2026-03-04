@@ -1,7 +1,5 @@
 name: Mintlify Check
 
-# Trigger: Executes on every push or pull request that modifies files in the /docs directory
-# 触发条件：当 /docs 目录下的文件发生变动或合并请求时执行
 on:
   push:
     branches: ["main"]
@@ -17,26 +15,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Check out the repository
-      # 第一步：拉取仓库代码
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Step 2: Set up Node.js environment
-      # 第二步：安装 Node.js 环境
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      # Step 3: Install Mintlify CLI globally
-      # 第三步：全局安装 Mintlify 命令行工具
       - name: Install Mintlify
         run: npm install -g mintlify
 
-      # Step 4: Run the documentation check command
-      # 第四步：执行文档检查指令
-      - name: Run Mintlify Check
+      - name: Run Mintlify Validate
         run: |
           cd docs
-          mintlify check
+          # 使用正确的 validate 命令替换之前的 check
+          mintlify validate
