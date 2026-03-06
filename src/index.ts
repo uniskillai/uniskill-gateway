@@ -110,11 +110,11 @@ async function handleUserRequest(
     userTier = dbData.tier;
     creditsRaw = dbData.credits.toString();
 
-    // 自动补全 KV 缓存，避免后续请求再次穿透 DB
-    ctx.waitUntil(Promise.all([
+    // 自动补全 KV 缓存，避免后续请求再次穿透 DB，直接 await 防止路由取到过时数据
+    await Promise.all([
       env.UNISKILL_KV.put(keyHash, creditsRaw),
       env.UNISKILL_KV.put(`tier:${keyHash}`, userTier, { expirationTtl: 3600 })
-    ]));
+    ]);
   }
 
 

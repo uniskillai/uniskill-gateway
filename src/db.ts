@@ -21,7 +21,7 @@ export const fetchUserDataFromDB = async (
     const { data, error } = await supabase
         .from("profiles")
         .select("tier, credits")
-        .eq("key_hash", keyHash)
+        .eq("token_hash", keyHash)
         .single();
 
     if (error) {
