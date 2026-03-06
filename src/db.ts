@@ -17,11 +17,11 @@ export const fetchUserDataFromDB = async (
 ): Promise<{ tier: string; credits: number }> => {
     const supabase = getSupabaseClient(env);
 
-    // 查询 profiles 表，使用已哈希的 key (token_hash) 匹配
+    // 查询 profiles 表，使用已哈希的 key (key_hash) 匹配
     const { data, error } = await supabase
         .from("profiles")
         .select("tier, credits")
-        .eq("token_hash", keyHash)
+        .eq("key_hash", keyHash)
         .single();
 
     if (error) {
