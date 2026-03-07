@@ -7,10 +7,14 @@
 export const GATEWAY_VERSION = "v1.0.0";
 
 // 逻辑：集中管理 CORS 响应头，确保前端 Fetch 不会被浏览器拦截
-const JSON_HEADERS = {
+export const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+const JSON_HEADERS = {
+    ...corsHeaders,
     "Content-Type": "application/json"
 };
 

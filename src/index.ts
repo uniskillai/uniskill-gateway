@@ -36,7 +36,7 @@ export default {
 
     // ── Routes Handle ──────────────────────────────────────────
     const method = request.method;
-    const cleanPath = path.endsWith("/") ? path.slice(0, -1) : path;
+    const cleanPath = path.endsWith("/") && path !== "/" ? path.slice(0, -1) : path;
 
     // ── Route: List All Skills (FOR FRONTEND) ──
     // 逻辑：兼容带/不带斜杠的路径
@@ -70,8 +70,8 @@ export default {
 
     // ── Route: Get Skill Detail API (FOR FRONTEND) ──
     // 逻辑：允许 frontend 通过 GET 读取并解析 KV 中的 Markdown 原文
-    if (request.method === "GET" && path.startsWith("/v1/skills/")) {
-      const skillName = path.split("/").pop();
+    if (method === "GET" && cleanPath.startsWith("/v1/skills/")) {
+      const skillName = cleanPath.split("/").pop();
       console.log(`[DEBUG] GET Skill Detail: path=${path}, skillName=${skillName}`);
 
       if (!skillName) {
