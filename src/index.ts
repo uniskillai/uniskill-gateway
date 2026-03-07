@@ -9,6 +9,7 @@ import { handleProvision } from "./routes/admin";
 import { handleBasicConnector } from "./routes/basic-connector";
 import { errorResponse } from "./utils/response";
 import { getCredits, deductCredit } from "./utils/billing";
+import { SkillParser } from "./engine/parser";
 
 // ── 环境变量类型声明 ──────────────────────────────────────────
 export interface Env {
@@ -37,6 +38,36 @@ export default {
     // ── Preflight: Handle CORS ──
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
+    }
+
+    // ── Route: Get Skill Detail API (FOR FRONTEND) ──
+    // 逻辑：允许 frontend 通过 GET 读取并解析 KV 中的 Markdown 原文
+    if (request.method === "GET" && path.startsWith("/v1/skills/")) {
+      const skillName = path.split("/").pop();
+      if (!skillName) {
+        return errorResponse("Missing skill name", 400);
+      }
+
+      // 逻辑：优先从官方库获取
+      let skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(skillName));
+      let isOfficial = true;
+
+      if (!skillRaw) {
+        // TODO: 未来可在此扩展用户私有技能的查询逻辑
+        return errorResponse("Skill Not Found", 404);
+      }
+
+      // 逻辑：调用引擎 Parser 将 Markdown 解析为结构化 JSON
+      const parsedSpec = SkillParser.parse(skillRaw);
+
+      return new Response(JSON.stringify({
+        success: true,
+        spec: parsedSpec,
+        is_official: isOfficial
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
     }
 
     // ── Route: Admin Provisioning ──
