@@ -1,6 +1,9 @@
 // src/formatters/news.ts
 // Logic: Formatter for news aggregation
 
+/**
+ * @returns string - JSON stringified results
+ */
 export function formatNews(data: any): string {
     const articles = data.articles || [];
     if (articles.length === 0) return "No recent news found.";

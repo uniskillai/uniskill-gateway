@@ -1,6 +1,9 @@
 // src/formatters/weather.ts
 // Logic: Specialized formatter for wttr.in (Extreme dehydration)
 
+/**
+ * @returns string - JSON stringified weather data
+ */
 export function formatWeather(rawData: any): string {
     try {
         // 提取最核心的数据节点

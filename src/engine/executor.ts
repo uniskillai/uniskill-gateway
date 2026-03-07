@@ -3,7 +3,7 @@
 
 // import { SkillParser } from "./parser"; // Unused after refactor
 // import { PluginFormatter } from "../plugins/formatter";
-import { PluginRegistryManager } from "../formatters/index";
+// import { PluginRegistryManager } from "../formatters/index"; // Unused after refactor
 
 // Logic: Define Cloudflare environment variables
 // 逻辑：定义 Cloudflare 的环境变量接口
@@ -55,23 +55,13 @@ export async function executeSkill(impl: any, params: any, env: Env) {
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error(`[Executor] Upstream Error: ${response.status} - ${errorText}`);
-            return `Skill execution failed: Upstream API returned ${response.status}.`;
+            throw new Error(`Upstream API returned ${response.status}: ${errorText}`);
         }
 
-        const rawData = await response.json();
-
-        // ── Step 3: Post-Processing Hook (The Magic) ──
-        // 逻辑：如果 YAML 中定义了清洗钩子，则将原始数据交给对应的插件处理
-        if (impl.plugin_hook) {
-            return await PluginRegistryManager.format(impl.plugin_hook, rawData);
-        }
-
-        // 逻辑：如果没有定义钩子（如普通的 proxy 技能），直接返回字符串化的结果
-        return JSON.stringify(rawData);
+        return await response.json();
 
     } catch (error: any) {
         console.error(`[Executor] Network Error:`, error);
-        return `Skill execution failed: Network or parsing error.`;
+        throw error;
     }
 }

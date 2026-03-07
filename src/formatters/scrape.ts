@@ -1,6 +1,9 @@
 // src/formatters/scrape.ts
 // Logic: Formatter for webpage scraping (Jina)
 
+/**
+ * @returns string - Markdown formatted string
+ */
 export function formatScrape(data: any): string {
     const content = data.content || data.markdown || "Failed to extract content.";
     const url = data.url || "Unknown Source";

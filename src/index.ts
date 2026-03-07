@@ -10,6 +10,7 @@ import { handleBasicConnector } from "./routes/basic-connector";
 import { errorResponse, corsHeaders, successResponse } from "./utils/response";
 import { getCredits, deductCredit } from "./utils/billing";
 import { SkillParser } from "./engine/parser";
+import { formatters } from "./formatters/index";
 
 // ── 环境变量类型声明 ──────────────────────────────────────────
 export interface Env {
@@ -226,7 +227,15 @@ export default {
         }
 
         // ── Step 5: Execution ──
-        const executionResult = await executeSkill(implementation, params, env);
+        const rawData = await executeSkill(implementation, params, env);
+        let finalData = rawData;
+
+        // 🔴 核心逻辑：检查该技能是否配置了 plugin_hook
+        const hookName = implementation.plugin_hook;
+        if (hookName && (formatters as any)[hookName]) {
+          // 逻辑：如果找到了对应的清洗器，就把脏数据扔进去“洗”一遍
+          finalData = (formatters as any)[hookName](rawData);
+        }
 
         // ── Step 6: Post-Execution Billing ──
         ctx.waitUntil(deductCredit(
@@ -239,7 +248,7 @@ export default {
           skillName
         ));
 
-        return new Response(executionResult, {
+        return new Response(typeof finalData === 'string' ? finalData : JSON.stringify(finalData), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });

@@ -7,7 +7,10 @@ import { formatSearch } from "./search";
 import { formatScrape } from "./scrape";
 
 // 定义统一的清洗器函数签名
-type FormatterFn = (data: any) => string | Promise<string>;
+/**
+ * @returns string - All formatters must return a stringified JSON or text
+ */
+type FormatterFn = (data: any) => string;
 
 export const formatters: Record<string, FormatterFn> = {
     // 逻辑：注册官方技能清洗器
@@ -15,7 +18,6 @@ export const formatters: Record<string, FormatterFn> = {
     "NEWS_AGGREGATOR_FORMATTER": formatNews,
     "UNISKILL_SEARCH_FORMATTER": formatSearch,
     "JINA_READER_FORMATTER": formatScrape,
-    // 未来新增的技能清洗器都在这里注册...
 };
 
 /**
@@ -26,7 +28,7 @@ export const PluginRegistryManager = {
         const formatter = formatters[hookName];
 
         if (formatter) {
-            return await formatter(rawData);
+            return formatter(rawData);
         }
 
         // Fallback: If no plugin registered, return raw JSON string
