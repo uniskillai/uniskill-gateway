@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "wrangler dev --remote",
     "deploy": "wrangler deploy",
-    "sync": "npx tsx scripts/sync-skills.ts",
     "type-check": "tsc --noEmit"
   },
   "keywords": [],
