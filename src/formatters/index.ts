@@ -1,28 +1,32 @@
 // src/formatters/index.ts
-// Logic: Plugin Registry - Entry point for all formatters
+// 逻辑：钩子调度中心。这里的 Key 必须和 .md 文件中的 `plugin_hook` 严格一致！
 
-import { SearchFormatter } from "./search";
-import { ScrapeFormatter } from "./scrape";
-import { NewsFormatter } from "./news";
-import { WeatherFormatter } from "./weather";
+import { formatWeather } from "./weather";
+import { formatNews } from "./news";
+import { formatSearch } from "./search";
+import { formatScrape } from "./scrape";
 
-/**
- * Logic: Central registry for all data cleaning plugins
- * 逻辑：所有数据清洗插件的中心注册表
- */
-export const PluginRegistry: Record<string, { format: (data: any) => string | Promise<string> }> = {
-    "UNISKILL_SEARCH_FORMATTER": SearchFormatter,
-    "JINA_READER_FORMATTER": ScrapeFormatter,
-    "NEWS_AGGREGATOR_FORMATTER": NewsFormatter,
-    "WEATHER_FORMATTER": WeatherFormatter, // 🔴 新增：天气格式化插件示例
+// 定义统一的清洗器函数签名
+type FormatterFn = (data: any) => string | Promise<string>;
+
+export const formatters: Record<string, FormatterFn> = {
+    // 逻辑：注册官方技能清洗器
+    "WTTR_WEATHER_FORMATTER": formatWeather,
+    "NEWS_AGGREGATOR_FORMATTER": formatNews,
+    "UNISKILL_SEARCH_FORMATTER": formatSearch,
+    "JINA_READER_FORMATTER": formatScrape,
+    // 未来新增的技能清洗器都在这里注册...
 };
 
+/**
+ * Logic: Plugin Manager to coordinate formatted execution
+ */
 export const PluginRegistryManager = {
     async format(hookName: string, rawData: any): Promise<string> {
-        const formatter = PluginRegistry[hookName];
+        const formatter = formatters[hookName];
 
         if (formatter) {
-            return await formatter.format(rawData);
+            return await formatter(rawData);
         }
 
         // Fallback: If no plugin registered, return raw JSON string
