@@ -7,6 +7,14 @@ description: "Start building with UniSkill in under 5 minutes."
 
 Visit the [UniSkill Dashboard](https://uniskill.ai/dashboard) to retrieve your API key.
 
+### Quick Setup (Recommended)
+
+Run our automated setup script to instantly configure UniSkill skills for your environment:
+
+```bash
+curl -fsSL https://uniskill.ai/setup-skills.sh | bash -s -- YOUR_API_KEY
+```
+
 ## 2. Make your first request
 
 Test your key using `curl`:
@@ -18,7 +26,7 @@ curl https://api.uniskill.ai/v1/search \
   -d '{"query": "Hello UniSkill"}'
 ```
 
-### 3. Monitor your Usage
+## 3. Monitor your Usage
 
 Every UniSkill response includes diagnostic headers. You don't need a separate API to check your balance; just look at the headers of any request:
 
