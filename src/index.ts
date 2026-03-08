@@ -7,10 +7,11 @@ import { SkillKeys } from "./utils/skill-keys";
 import { executeSkill } from "./engine/executor";
 import { handleProvision } from "./routes/admin";
 import { handleBasicConnector } from "./routes/basic-connector";
-import { errorResponse, corsHeaders, successResponse } from "./utils/response";
-import { getCredits, deductCredit } from "./utils/billing";
+import { errorResponse, corsHeaders, successResponse, rateLimitResponse } from "./utils/response";
+import { getCredits, deductCredit, getTier } from "./utils/billing";
 import { SkillParser } from "./engine/parser";
 import { formatters } from "./formatters/index";
+import { checkRateLimit } from "./rateLimit";
 
 // ── 环境变量类型声明 ──────────────────────────────────────────
 export interface Env {
@@ -211,7 +212,15 @@ export default {
           implementation = spec.implementation;
         }
 
-        // ── Step 4: Billing Check ──
+        // ── Step 4: Rate Limit Check ──
+        const userTier = await getTier(env.UNISKILL_KV, keyHash);
+        const rlResult = await checkRateLimit(keyHash, userTier, env);
+
+        if (!rlResult.isAllowed) {
+          return rateLimitResponse(rlResult.limit, rlResult.remaining);
+        }
+
+        // ── Step 5: Billing Check ──
         let currentCredits = await getCredits(env.UNISKILL_KV, keyHash);
         if (currentCredits === -1) currentCredits = 0;
 
@@ -250,7 +259,12 @@ export default {
 
         return new Response(typeof finalData === 'string' ? finalData : JSON.stringify(finalData), {
           status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+            "X-RateLimit-Limit": rlResult.limit.toString(),
+            "X-RateLimit-Remaining": rlResult.remaining.toString(),
+          }
         });
 
       } catch (error: any) {

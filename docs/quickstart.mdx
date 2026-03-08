@@ -5,11 +5,11 @@ description: "Start building with UniSkill in under 5 minutes."
 
 ## 1. Get your API Key
 
-访问 [UniSkill Dashboard](https://uniskill.ai/dashboard) 获取你的 API 密钥。
+Visit the [UniSkill Dashboard](https://uniskill.ai/dashboard) to retrieve your API key.
 
 ## 2. Make your first request
 
-使用 `curl` 测试你的密钥：
+Test your key using `curl`:
 
 ```bash
 curl https://api.uniskill.ai/v1/search \
@@ -18,7 +18,14 @@ curl https://api.uniskill.ai/v1/search \
   -d '{"query": "Hello UniSkill"}'
 ```
 
-## 3. Next Steps
+### 3. Monitor your Usage
 
-- 查看 [Web Search](/api-reference/search) 了解更多搜索参数。
-- 了解 [Credits & Billing](/credits) 政策。
+Every UniSkill response includes diagnostic headers. You don't need a separate API to check your balance; just look at the headers of any request:
+
+- `X-UniSkill-Balance`: Your remaining credits.
+- `X-RateLimit-Remaining`: Your remaining requests for the current minute.
+
+## 4. Next Steps
+
+- Explore [Web Search](/api-reference/search) for more search parameters.
+- Learn about [Credits & Billing](/credits) policies.

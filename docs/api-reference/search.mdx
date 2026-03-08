@@ -5,7 +5,7 @@ description: "Give your agent real-time access to the entire web with uniskill_s
 
 ## Overview
 
-`uniskill_search` 技能允许你的 Agent 检索互联网上的最新信息。它经过专门优化，能够过滤掉广告和无关的噪音，仅返回对大模型（LLM）最有价值的结构化数据。
+The `uniskill_search` skill allows your agent to retrieve the latest information from the internet. It is specifically optimized to filter out ads and irrelevant noise, returning only high-value structured data optimized for Large Language Models (LLMs).
 
 ### Credit Cost
 - **Cost**: 10 credits per call.
@@ -23,9 +23,35 @@ description: "Give your agent real-time access to the entire web with uniskill_s
 
 ---
 
+## Response Headers
+
+Every request to the UniSkill Gateway returns standard headers to help you track your usage and limits:
+
+| Header | Description |
+| :--- | :--- |
+| `X-RateLimit-Limit` | Your maximum allowed requests per minute (RPM). |
+| `X-RateLimit-Remaining` | Remaining requests allowed in the current minute window. |
+| `X-UniSkill-Balance` | Your remaining account credit balance. |
+| `X-UniSkill-Consumed` | Credits consumed by the current request. |
+| `X-UniSkill-Status` | Operation status (`Success` or `Error`). |
+| `X-UniSkill-Request-ID` | Unique identifier for debugging and support. |
+
+---
+
+## Error Handling
+
+| Status Code | Error | Description |
+| :--- | :--- | :--- |
+| `401` | Unauthorized | Invalid or missing API key. |
+| `402` | Payment Required | Insufficient credits to perform the operation. |
+| `429` | Too Many Requests | Rate limit exceeded for your tier. |
+| `502` | Bad Gateway | Upstream service error (e.g., third-party API timeout). |
+
+---
+
 ## Code Examples
 
-按照规范，变量名使用全英文，关键逻辑使用中文注释。
+Following best practices, variable names are in English and key logic is documented with clear comments.
 
 <CodeGroup>
 
@@ -33,12 +59,10 @@ description: "Give your agent real-time access to the entire web with uniskill_s
 import requests
 
 # Set your UniSkill API Key
-# 设置你的 UniSkill API 密钥
 api_key = "YOUR_UNISKILL_API_KEY"
 
 def perform_search(query):
     # API endpoint for the search skill
-    # 搜索技能的 API 端点
     url = "https://api.uniskill.ai/v1/search"
     
     headers = {
@@ -53,7 +77,6 @@ def perform_search(query):
     }
 
     # Execute the request and handle the response
-    # 执行请求并处理返回结果
     response = requests.post(url, json=payload, headers=headers)
     return response.json()
 

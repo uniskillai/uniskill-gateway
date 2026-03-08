@@ -35,7 +35,8 @@
       "group": "Skill Catalog",
       "pages": [
         "api-reference/search",
-        "api-reference/scrape"
+        "api-reference/scrape",
+        "api-reference/basic-connector"
       ]
     }
   ],

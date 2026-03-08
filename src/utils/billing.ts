@@ -17,6 +17,16 @@ export async function getCredits(kv: KVNamespace, keyHash: string): Promise<numb
 }
 
 /**
+ * Reads the current subscription tier for a key hash from KV.
+ * KV schema: tier:{hash}
+ * Default: FREE
+ */
+export async function getTier(kv: KVNamespace, keyHash: string): Promise<string> {
+    const raw = await kv.get(SkillKeys.tier(keyHash));
+    return raw || "FREE";
+}
+
+/**
  * Pushes the new credit balance back to Supabase via the Vercel Webhook.
  */
 async function syncToSupabase(

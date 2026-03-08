@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "wrangler dev --remote",
     "deploy": "wrangler deploy",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "sync-docs": "tsx scripts/sync-docs.ts"
   },
   "keywords": [],
   "author": "",

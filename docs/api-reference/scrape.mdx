@@ -5,23 +5,43 @@ description: "Extract structured data or Markdown from any URL."
 
 ## Usage
 
-使用 `uniskill_scrape` 将网页内容转换为 Agent 可直接理解的 Markdown 格式。
+Use `uniskill_scrape` to convert web pages into high-quality Markdown that AI agents can directly process and understand.
 
 ### Parameters
 
-- `url` (string): 目标网页地址。
-- `format` (string): 返回格式，可选 `markdown` (默认) 或 `html`。
+- `url` (string): The target web page URL.
+- `format` (string): Response format, options are `markdown` (default) or `html`.
+
+---
+
+## Response Headers
+
+Monitor your usage in real-time with our standard diagnostic headers:
+
+| Header | Description |
+| :--- | :--- |
+| `X-RateLimit-Limit` | Your maximum RPM limit. |
+| `X-RateLimit-Remaining` | Remaining calls in the current window. |
+| `X-UniSkill-Balance` | Total remaining credits. |
+| `X-UniSkill-Status` | Execution status. |
+
+---
+
+## Error Handling
+
+Standard HTTP status codes are used to indicate success or failure:
+- **200 OK**: Success.
+- **401 Unauthorized**: Key is missing or invalid.
+- **429 Too Many Requests**: You have hit your RPM limit.
+- **402 Payment Required**: Please top up your credits on the dashboard.
 
 ```python
 # Logic: Simple scraping example
-# 逻辑：简易网页抓取示例
-
 import requests
 
 def scrape_page(target_url):
     api_url = "https://api.uniskill.ai/v1/scrape"
-    # Variables in English, comments in Chinese
-    # 变量全英文，注释用中文
+    # Header and payload configuration
     headers = {"Authorization": "Bearer YOUR_KEY"}
     payload = {"url": target_url, "format": "markdown"}
     

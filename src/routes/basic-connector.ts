@@ -4,10 +4,11 @@
 // 逻辑：AI Agent 的透明代理，支持实时积分扣除
 // ============================================================
 
-import { getCredits, deductCredit } from "../utils/billing.ts";
+import { getCredits, deductCredit, getTier } from "../utils/billing.ts";
 import { hashKey } from "../utils/auth.ts";
-import { errorResponse, buildUniskillMeta } from "../utils/response.ts";
+import { errorResponse, buildUniskillMeta, corsHeaders, rateLimitResponse } from "../utils/response.ts";
 import type { Env } from "../index.ts";
+import { checkRateLimit } from "../rateLimit.ts";
 
 /**
  * Logic: Cost per successful proxy request (1 credit)
@@ -38,6 +39,14 @@ export async function handleBasicConnector(
     }
     if (currentCredits < BASIC_CONNECTOR_COST) {
         return errorResponse("Insufficient credits. Your current balance is lower than the required cost.", 402);
+    }
+
+    // ── Step 1.5: Rate Limit Check ───────────────────────
+    const userTier = await getTier(env.UNISKILL_KV, keyHash);
+    const rlResult = await checkRateLimit(keyHash, userTier, env);
+
+    if (!rlResult.isAllowed) {
+        return rateLimitResponse(rlResult.limit, rlResult.remaining);
     }
 
     // ── Step 2: Payload Parsing ────────────────────────────
@@ -92,6 +101,8 @@ export async function handleBasicConnector(
     responseHeaders.set("X-UniSkill-Consumed", BASIC_CONNECTOR_COST.toString());
     responseHeaders.set("X-UniSkill-Balance", remainingBalance.toString());
     responseHeaders.set("X-UniSkill-Request-ID", String(metaData.request_id));
+    responseHeaders.set("X-RateLimit-Limit", rlResult.limit.toString());
+    responseHeaders.set("X-RateLimit-Remaining", rlResult.remaining.toString());
 
     // ── Logic: Add deep diagnostics for upstream issues ──
     // 逻辑：标记错误来源，告知工具调用者这是 UniSkill 的问题还是上游供应商的问题
@@ -104,6 +115,20 @@ export async function handleBasicConnector(
 
     // 🛡️ 状态码保护逻辑：拦截第三方 API 的 402 状态码，避免 LLM 误报 UniSkill 欠费
     if (proxyResponse.status === 402) {
+        // 逻辑：剥离上游可能导致解析崩溃的传输头 (如 Content-Length, Content-Encoding)
+        // 只保留我们自己注入的 UniSkill 诊断头与 CORS 跨域头
+        const safeHeaders = new Headers();
+        Object.entries(corsHeaders).forEach(([k, v]) => safeHeaders.set(k, v));
+        safeHeaders.set("Content-Type", "application/json");
+        safeHeaders.set("X-UniSkill-Status", "Upstream-Error");
+        safeHeaders.set("X-UniSkill-Error-Source", "Upstream-Provider");
+        safeHeaders.set("X-UniSkill-Upstream-Status", "402");
+        safeHeaders.set("X-UniSkill-Consumed", BASIC_CONNECTOR_COST.toString());
+        safeHeaders.set("X-UniSkill-Balance", remainingBalance.toString());
+        safeHeaders.set("X-UniSkill-Request-ID", String(metaData.request_id));
+        safeHeaders.set("X-RateLimit-Limit", rlResult.limit.toString());
+        safeHeaders.set("X-RateLimit-Remaining", rlResult.remaining.toString());
+
         return new Response(JSON.stringify({
             success: false,
             error: "Upstream Service Error",
@@ -111,10 +136,11 @@ export async function handleBasicConnector(
             _uniskill: metaData
         }), {
             status: 502, // 将上游 402 包装为 502 Gateway Error
-            headers: { "Content-Type": "application/json", ...Object.fromEntries(responseHeaders) }
+            headers: safeHeaders // 👈 使用干净、安全的头部
         });
     }
 
+    // 如果不是 402，则安全透传原始 Body 和原始 Headers
     return new Response(proxyResponse.body, {
         status: proxyResponse.status,
         headers: responseHeaders,

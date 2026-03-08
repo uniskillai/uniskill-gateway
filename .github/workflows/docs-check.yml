@@ -1,27 +1,48 @@
-name: Mintlify Check
+name: Docs Automation (Sync & Validate)
 
 on:
   push:
     branches: ["main"]
     paths:
+      - "src/**"
       - "docs/**"
   pull_request:
     branches: ["main"]
     paths:
+      - "src/**"
       - "docs/**"
 
 jobs:
-  check-docs:
+  sync-and-validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # 允许 Action 推送代码回仓库
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 完整历史记录，方便提交
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Run Documentation Sync
+        run: npm run sync-docs
+
+      - name: Commit and Push Changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(docs): auto-sync documentation from source logic [skip ci]"
+          file_pattern: "docs/*.mdx"
+          commit_user_name: "UniSkill Bot"
+          commit_user_email: "bot@uniskill.ai"
 
       - name: Install Mintlify
         run: npm install -g mintlify
@@ -29,5 +50,4 @@ jobs:
       - name: Run Mintlify Validate
         run: |
           cd docs
-          # 使用正确的 validate 命令替换之前的 check
           mintlify validate

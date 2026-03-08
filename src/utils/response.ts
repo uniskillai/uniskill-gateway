@@ -29,6 +29,27 @@ export function errorResponse(message: string, status: number): Response {
 }
 
 /**
+ * Builds a standardized 429 Too Many Requests response.
+ */
+export function rateLimitResponse(limit: number, remaining: number): Response {
+    return new Response(
+        JSON.stringify({
+            success: false,
+            error: "Too Many Requests",
+            message: `Rate limit exceeded. Your tier limit is ${limit} RPM.`,
+        }),
+        {
+            status: 429,
+            headers: {
+                ...JSON_HEADERS,
+                "X-RateLimit-Limit": limit.toString(),
+                "X-RateLimit-Remaining": remaining.toString(),
+            }
+        }
+    );
+}
+
+/**
  * Builds a standardised JSON success response, merging extra data.
  */
 export function successResponse(data: Record<string, unknown>, status = 200): Response {
