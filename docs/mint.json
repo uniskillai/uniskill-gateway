@@ -1,10 +1,6 @@
 {
   "name": "UniSkill",
-  "logo": {
-    "light": "/logo/light.png",
-    "dark": "/logo/dark.png"
-  },
-  "favicon": "/favicon.png",
+  "favicon": "/favicon.svg",
   "colors": {
     "primary": "#007BFF",
     "light": "#00F5FF",

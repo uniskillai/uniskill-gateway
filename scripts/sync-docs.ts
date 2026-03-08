@@ -62,14 +62,16 @@ function updateFileWithMarkers(filePath: string, marker: string, newContent: str
     if (!fs.existsSync(fullPath)) return;
 
     let content = fs.readFileSync(fullPath, 'utf-8');
-    const startMarker = `<!-- AUTO_GEN:${marker}_START -->`;
-    const endMarker = `<!-- AUTO_GEN:${marker}_END -->`;
+    const startMarker = `{/* AUTO_GEN:${marker}_START */}`;
+    const endMarker = `{/* AUTO_GEN:${marker}_END */}`;
 
-    const regex = new RegExp(`${startMarker}[\\s\\S]*?${endMarker}`, 'g');
-    const replacement = `${startMarker}\n${newContent}\n${endMarker}`;
+    const startIndex = content.indexOf(startMarker);
+    const endIndex = content.indexOf(endMarker);
 
-    if (regex.test(content)) {
-        content = content.replace(regex, replacement);
+    if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+        content = content.substring(0, startIndex) +
+            startMarker + '\n' + newContent + '\n' +
+            content.substring(endIndex);
         fs.writeFileSync(fullPath, content);
         console.log(`Updated ${filePath} [${marker}]`);
     } else {
