@@ -10,7 +10,6 @@
 export interface Env {
     TAVILY_API_KEY: string;
     JINA_API_KEY: string;
-    NEWS_API_KEY: string;
     // ... 其他系统级环境变量
 }
 
@@ -35,8 +34,6 @@ export async function executeSkill(impl: any, params: any, env: Env) {
             headers["Authorization"] = `Bearer ${env.TAVILY_API_KEY}`;
         } else if (impl.api_key === "{{JINA_API_KEY}}") {
             headers["Authorization"] = `Bearer ${env.JINA_API_KEY}`;
-        } else if (impl.api_key === "{{NEWS_API_KEY}}") {
-            headers["Authorization"] = `Bearer ${env.NEWS_API_KEY}`;
         } else {
             // 逻辑：处理用户私有技能自带的常规 Key
             headers["Authorization"] = `Bearer ${impl.api_key}`;
