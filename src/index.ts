@@ -195,7 +195,12 @@ export default {
       }
 
       // 路由：刮削与搜索语义化入口 (支持 RESTful 直接调用)
-      if ((cleanPath === "/v1/scrape" || cleanPath === "/v1/search") && method === "POST") {
+      if (cleanPath === "/v1/scrape") {
+        const { handleScrape } = await import("./routes/scrape");
+        return handleScrape(request, env);
+      }
+
+      if (cleanPath === "/v1/search" && method === "POST") {
         return handleExecuteSkill(request, env, ctx);
       }
 
