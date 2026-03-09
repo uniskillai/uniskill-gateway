@@ -96,6 +96,29 @@ export default {
         return successResponse({ data: skills });
       }
 
+      // 路由：Export All Skills as OpenAI JSON Schema (Dynamic Discovery)
+      if (method === "GET" && cleanPath === "/v1/skills/schema") {
+        const list = await env.UNISKILL_KV.list({ prefix: "skill:official:" });
+        const schemas = [];
+
+        for (const key of list.keys) {
+          const raw = await env.UNISKILL_KV.get(key.name);
+          if (raw) {
+            try {
+              const skill = JSON.parse(raw);
+              schemas.push({
+                name: skill.id,
+                description: skill.meta?.description || skill.docs?.short || "No description",
+                parameters: skill.meta?.parameters || { type: "object", properties: {} }
+              });
+            } catch (e) {
+              console.error(`Failed to parse skill for schema export: ${key.name}`, e);
+            }
+          }
+        }
+        return successResponse({ tools: schemas });
+      }
+
       // 路由：Get Skill Detail API
       if (method === "GET" && cleanPath.startsWith("/v1/skills/")) {
         const skillName = cleanPath.split("/").pop();
