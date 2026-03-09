@@ -44,14 +44,32 @@ export async function executeSkill(impl: any, params: any, env: Env) {
     }
 
     // ── Step 2: Request Execution ──
-    // 逻辑：发起实际的网关请求，并增加 try-catch 容错处理
+    // 🚦 核心重构：HTTP 方法智能分流器 (Method Router)
+    let targetUrl = impl.endpoint;
+    const method = (impl.method || "POST").toUpperCase();
+
+    const fetchOptions: RequestInit = {
+        method: method,
+        headers: headers
+    };
+
     try {
-        const response = await fetch(impl.endpoint, {
-            method: impl.method || 'POST',
-            headers: headers,
-            // 逻辑：将 AI 传来的参数映射到请求体
-            body: JSON.stringify(params)
-        });
+        if (method === "GET") {
+            // GET 请求绝对不能有 body！将参数转化为 URL 查询字符串
+            if (params && Object.keys(params).length > 0) {
+                const queryParams = new URLSearchParams(params as Record<string, string>).toString();
+                targetUrl += targetUrl.includes('?') ? `&${queryParams}` : `?${queryParams}`;
+            }
+        } else {
+            // POST / PUT / PATCH 请求，参数放进 body
+            if (params) {
+                fetchOptions.body = JSON.stringify(params);
+            }
+        }
+
+        console.log(`[Executor] Calling upstream: ${method} ${targetUrl}`);
+
+        const response = await fetch(targetUrl, fetchOptions);
 
         if (!response.ok) {
             const errorText = await response.text();
