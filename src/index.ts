@@ -5,7 +5,7 @@
 import { hashKey } from "./utils/auth";
 import { SkillKeys } from "./utils/skill-keys";
 import { handleProvision } from "./routes/admin";
-import { handleMCPRequest } from "./routes/mcp-server";
+import { handleMCPSse, handleMCPMessage } from "./routes/mcp-server";
 import { handleExecuteSkill } from "./routes/execute-skill";
 import { handleAuthVerify } from "./routes/auth";
 import { errorResponse, corsHeaders, successResponse } from "./utils/response";
@@ -178,23 +178,16 @@ export default {
         return handleProvision(request, env);
       }
 
-      // 路由：标准 MCP 协议请求
+      // 路由：标准 MCP 协议请求 (SSE 模式)
       if (cleanPath === "/v1/mcp") {
-        // 逻辑：处理 mcporter 首次发起的 GET 握手/健康检查请求
         if (method === "GET") {
-          console.log(`[MCP] Received GET handshake request from Agent`);
-          // 如果 mcporter 期望 SSE 流，这里我们先返回一个友好的 200 OK 兼容探针
-          // 注意：某些严格的 MCP 客户端可能强制要求返回 Content-Type: text/event-stream
-          return new Response("UniSkill MCP Server is online and ready.", {
-            status: 200,
-            headers: { "Content-Type": "text/plain", ...corsHeaders }
-          });
+          return handleMCPSse(request, env);
         }
+      }
 
-        // 逻辑：处理实际的 JSON-RPC 指令
-        if (method === "POST") {
-          return handleMCPRequest(request, env, ctx);
-        }
+      // 路由：MCP 消息接收端点
+      if (cleanPath === "/v1/mcp/message" && method === "POST") {
+        return handleMCPMessage(request, env, ctx);
       }
 
       // 路由：底层工具执行 (Agent 直接调用)

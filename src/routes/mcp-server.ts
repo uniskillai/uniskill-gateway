@@ -1,149 +1,147 @@
 // uniskill-gateway/src/routes/mcp-server.ts
-// Logic: Core MCP (Model Context Protocol) Server for Dynamic Tool Discovery and Execution.
+// Logic: Hardcore SSE-based MCP (Model Context Protocol) Engine for Cloudflare Workers
 
 import type { Env } from "../index";
 import { errorResponse } from "../utils/response";
-// 静态导入核心执行网关，消除循环依赖
 import { handleExecuteSkill } from "./execute-skill";
 
-export async function handleMCPRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // 逻辑：MCP 协议要求必须是 POST 请求传输 JSON-RPC 消息
-    if (request.method !== "POST") {
-        return errorResponse("Method Not Allowed. MCP endpoint requires POST.", 405);
+// 逻辑：全局内存字典，用于在 Serverless 环境中暂存 SSE 管道
+// 注意：该 Map 在运行时可能会因为 Isolate 重启而丢失。对于单用户 Agent 网关这是可接受的折中方案。
+const mcpSessions = new Map<string, ReadableStreamDefaultController>();
+
+/**
+ * 通道 1: SSE 握手端点 (Agent 发起 GET 请求时调用)
+ * 职责：建立长连接，并下发 endpoint 事件通知 Agent 消息接收地址
+ */
+export async function handleMCPSse(request: Request, _env: Env): Promise<Response> {
+    const sessionId = crypto.randomUUID();
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream({
+        start(controller) {
+            mcpSessions.set(sessionId, controller);
+            console.log(`[MCP] 🔗 SSE Connection opened: ${sessionId}`);
+
+            // 【核心协议】MCP 强制要求：刚连上必须下发一个 endpoint 事件
+            const postEndpoint = `/v1/mcp/message?sessionId=${sessionId}`;
+            const initMessage = `event: endpoint\ndata: ${postEndpoint}\n\n`;
+            controller.enqueue(encoder.encode(initMessage));
+        },
+        cancel() {
+            console.log(`[MCP] ❌ SSE Connection closed: ${sessionId}`);
+            mcpSessions.delete(sessionId);
+        }
+    });
+
+    return new Response(stream, {
+        headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+        }
+    });
+}
+
+/**
+ * 通道 2: 指令接收端点 (Agent 发起 POST 请求时调用)
+ * 职责：接收 JSON-RPC 消息，处理业务逻辑，并将结果通过 SSE 流推回
+ */
+export async function handleMCPMessage(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    const sessionId = url.searchParams.get("sessionId");
+
+    if (!sessionId || !mcpSessions.has(sessionId)) {
+        return errorResponse("Session not found or disconnected. Please reconnect SSE.", 404);
     }
 
+    const sseController = mcpSessions.get(sessionId)!;
     let payload: any;
+
     try {
         payload = await request.json();
     } catch {
         return errorResponse("Invalid JSON-RPC payload.", 400);
     }
 
-    const { jsonrpc, id, method, params } = payload;
+    const { id, method, params } = payload;
+    const encoder = new TextEncoder();
 
-    // 逻辑：校验是否为标准的 JSON-RPC 2.0 格式
-    if (jsonrpc !== "2.0") {
-        return errorResponse("Invalid protocol. Only JSON-RPC 2.0 is supported.", 400);
-    }
+    console.log(`[MCP] 📩 Received command [${method}] on session ${sessionId}`);
 
-    // ============================================================================
-    // 🟢 MCP 核心指令 1: 工具发现 (List Tools) - 替代手动写 SKILL.md
-    // ============================================================================
-    if (method === "tools/list") {
-        console.log(`[MCP] Agent requested tool list. Fetching from KV...`);
-
-        // 逻辑：利用终极前缀索引，秒拉所有官方技能
-        const kvList = await env.UNISKILL_KV.list({ prefix: "skill:official:" });
-        const mcpTools: any[] = [];
-
-        for (const key of kvList.keys) {
-            const skillDataStr = await env.UNISKILL_KV.get(key.name);
-            if (skillDataStr) {
-                const skill = JSON.parse(skillDataStr);
-
-                // 逻辑：将 UniSkill 的数据结构，完美转译为 MCP 的 InputSchema 契约
-                mcpTools.push({
-                    name: skill.id, // e.g., "uniskill_weather"
-                    description: skill.meta?.description || skill.docs?.description || "No description provided.",
-                    // 逻辑：直接读取预存的 JSON Schema (参数)
-                    inputSchema: skill.meta?.parameters || { type: "object", properties: {} }
-                });
-            }
-        }
-
-        // 逻辑：返回 MCP 标准响应
-        return new Response(JSON.stringify({
-            jsonrpc: "2.0",
-            id: id,
-            result: {
-                tools: mcpTools
-            }
-        }), { headers: { "Content-Type": "application/json" } });
-    }
-
-    // ============================================================================
-    // 🔴 MCP 核心指令 2: 工具调用 (Call Tool) - 对接扣费引擎
-    // ============================================================================
-    if (method === "tools/call") {
-        const toolName = params.name;
-        const toolArguments = params.arguments;
-
-        console.log(`[MCP] Agent executing tool: ${toolName}`, toolArguments);
-
-        // 1. 从 KV 中精准读取该技能的配置
-        const skillDataStr = await env.UNISKILL_KV.get(`skill:official:${toolName}`);
-
-        if (!skillDataStr) {
-            return new Response(JSON.stringify({
-                jsonrpc: "2.0",
-                id: id,
-                error: { code: -32601, message: `Tool not found on UniSkill Server: ${toolName}` }
-            }), { headers: { "Content-Type": "application/json" } });
-        }
-
+    // 使用 ctx.waitUntil 确保异步任务在 Worker 响应后继续运行
+    ctx.waitUntil((async () => {
         try {
-            // 构造虚拟 Request 给主入口执行，复用全部鉴权、计费、清洗逻辑
-            const authHeader = request.headers.get("Authorization");
-            if (!authHeader) {
-                return new Response(JSON.stringify({
-                    jsonrpc: "2.0",
-                    id: id,
-                    error: { code: -32000, message: `Missing Authorization header for tool execution.` }
-                }), { headers: { "Content-Type": "application/json" } });
-            }
+            let result: any = {};
 
-            const executeUrl = new URL(request.url);
-            executeUrl.pathname = `/v1/execute/${toolName}`;
-
-            const internalRequest = new Request(executeUrl.toString(), {
-                method: "POST",
-                headers: {
-                    "Authorization": authHeader,
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(toolArguments || {})
-            });
-
-            // 核心联动：直接调用纯净的执行网关，复用全部鉴权、计费、清洗逻辑
-            const response = await handleExecuteSkill(internalRequest, env, ctx);
-
-            if (!response.ok) {
-                const errText = await response.text();
-                return new Response(JSON.stringify({
-                    jsonrpc: "2.0",
-                    id: id,
-                    error: { code: -32000, message: `Execution Gateway Error: ${errText}` }
-                }), { headers: { "Content-Type": "application/json" } });
-            }
-
-            const resultText = await response.text();
-
-            return new Response(JSON.stringify({
-                jsonrpc: "2.0",
-                id: id,
-                result: {
-                    content: [
-                        {
-                            type: "text",
-                            text: resultText
-                        }
-                    ]
+            if (method === "tools/list") {
+                console.log(`[MCP] Fetching Tool List from KV...`);
+                const kvList = await env.UNISKILL_KV.list({ prefix: "skill:official:" });
+                const mcpTools = [];
+                for (const key of kvList.keys) {
+                    const skillStr = await env.UNISKILL_KV.get(key.name);
+                    if (skillStr) {
+                        const skill = JSON.parse(skillStr);
+                        mcpTools.push({
+                            name: skill.id,
+                            description: skill.meta?.description || "A UniSkill tool.",
+                            inputSchema: skill.meta?.parameters || { type: "object", properties: {} }
+                        });
+                    }
                 }
-            }), { headers: { "Content-Type": "application/json" } });
+                result = { tools: mcpTools };
+            }
+            else if (method === "tools/call") {
+                const toolName = params.name;
+                const toolArguments = params.arguments;
+                console.log(`[MCP] Executing Tool via SSE Internal logic: ${toolName}`);
+
+                // 构造内部伪造请求调用核心执行器
+                // 注意：这里需要继承原始请求的 Authorization 头
+                const authHeader = request.headers.get("Authorization") || "";
+                const executeUrl = new URL(request.url);
+                executeUrl.pathname = `/v1/execute/${toolName}`;
+
+                const internalRequest = new Request(executeUrl.toString(), {
+                    method: "POST",
+                    headers: {
+                        "Authorization": authHeader,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(toolArguments || {})
+                });
+
+                const response = await handleExecuteSkill(internalRequest, env, ctx);
+                const resultText = await response.text();
+
+                result = {
+                    content: [{ type: "text", text: resultText }]
+                };
+            }
+            else {
+                // 处理 initialize 等其他基础握手消息 (Mock 响应)
+                if (method === "initialize") {
+                    result = {
+                        protocolVersion: "2024-11-05",
+                        capabilities: {},
+                        serverInfo: { name: "UniSkill-Gateway", version: "1.0.0" }
+                    };
+                } else {
+                    throw new Error(`Method not supported: ${method}`);
+                }
+            }
+
+            const responsePayload = { jsonrpc: "2.0", id: id, result: result };
+            const sseMessage = `event: message\ndata: ${JSON.stringify(responsePayload)}\n\n`;
+            sseController.enqueue(encoder.encode(sseMessage));
 
         } catch (error: any) {
-            return new Response(JSON.stringify({
-                jsonrpc: "2.0",
-                id: id,
-                error: { code: -32000, message: `UniSkill execution failed: ${error.message}` }
-            }), { headers: { "Content-Type": "application/json" } });
+            console.error(`[MCP Error] ${error.message}`);
+            const errorPayload = { jsonrpc: "2.0", id: id, error: { code: -32000, message: error.message } };
+            sseController.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify(errorPayload)}\n\n`));
         }
-    }
+    })());
 
-    // 逻辑：兜底处理未知的 MCP 指令
-    return new Response(JSON.stringify({
-        jsonrpc: "2.0",
-        id: id,
-        error: { code: -32601, message: `MCP Method not supported by UniSkill: ${method}` }
-    }), { headers: { "Content-Type": "application/json" } });
+    return new Response("Accepted", { status: 202 });
 }
+
