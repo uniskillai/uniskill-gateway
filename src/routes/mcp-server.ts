@@ -5,6 +5,34 @@ import type { Env } from "../index";
 import { errorResponse } from "../utils/response";
 import { handleExecuteSkill } from "./execute-skill";
 
+/**
+ * 逻辑：网关级数据防腐层 - 强制将任何奇葩数据转化为 MCP 兼容的纯文本
+ */
+function formatToolResponse(rawData: any): string {
+    // 1. 判空防雷
+    if (rawData === null || rawData === undefined) {
+        return "Execution successful, but no content was returned by the upstream API.";
+    }
+
+    // 2. 如果已经是字符串，直接放行
+    if (typeof rawData === "string") {
+        return rawData;
+    }
+
+    // 3. 如果是标准 JSON 对象或数组，极其优雅地序列化
+    if (typeof rawData === "object") {
+        try {
+            // 限制深度或直接美化输出
+            return JSON.stringify(rawData, null, 2);
+        } catch (e) {
+            return `[Warning: Unserializable Object] ${String(rawData)}`;
+        }
+    }
+
+    // 4. 其他类型（数字、布尔值等）强转字符串
+    return String(rawData);
+}
+
 // ============================================================================
 // 🟢 通道 1: SSE 握手与监听端点 (GET)
 // ============================================================================
@@ -77,11 +105,24 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
                                 body: JSON.stringify(toolArguments || {})
                             });
 
-                            const response = await handleExecuteSkill(internalRequest, env, ctx);
-                            const resultText = await response.text();
+                            let finalOutput = "";
+                            try {
+                                const response = await handleExecuteSkill(internalRequest, env, ctx);
+                                const resultRaw = await response.text();
+
+                                // 处理可能是 JSON 的字符串
+                                try {
+                                    const parsed = JSON.parse(resultRaw);
+                                    finalOutput = formatToolResponse(parsed);
+                                } catch {
+                                    finalOutput = formatToolResponse(resultRaw);
+                                }
+                            } catch (apiError: any) {
+                                finalOutput = `[Tool Execution Failed] Upstream API Error: ${apiError.message || "Unknown error"}`;
+                            }
 
                             result = {
-                                content: [{ type: "text", text: resultText }]
+                                content: [{ type: "text", text: finalOutput }]
                             };
                         }
                         else if (method === "initialize") {
