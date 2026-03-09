@@ -178,14 +178,12 @@ export default {
         return handleProvision(request, env);
       }
 
-      // 路由：标准 MCP 协议请求 (SSE 模式)
-      if (cleanPath === "/v1/mcp") {
-        if (method === "GET") {
-          return handleMCPSse(request, env);
-        }
+      // 路由：MCP SSE 握手端点 (Agent 的第一步)
+      if (cleanPath === "/v1/mcp/sse" && method === "GET") {
+        return handleMCPSse(request, env);
       }
 
-      // 路由：MCP 消息接收端点
+      // 路由：MCP 消息接收端点 (Agent 的第二步)
       if (cleanPath === "/v1/mcp/message" && method === "POST") {
         return handleMCPMessage(request, env, ctx);
       }
