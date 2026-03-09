@@ -194,6 +194,11 @@ export default {
         return handleWeather(request, env);
       }
 
+      // 路由：刮削与搜索语义化入口 (支持 RESTful 直接调用)
+      if ((cleanPath === "/v1/scrape" || cleanPath === "/v1/search") && method === "POST") {
+        return handleExecuteSkill(request, env, ctx);
+      }
+
       // 路由：底层工具执行 (Agent 直接调用)
       // 注意：支持 /v1/execute 以及 /v1/execute/:toolName 两种语义 (RESTful 优雅架构)
       if (cleanPath.startsWith("/v1/execute") && method === "POST") {
