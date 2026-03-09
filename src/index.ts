@@ -188,6 +188,12 @@ export default {
         return handleMCPMessage(request, env, ctx);
       }
 
+      // 路由：天气查询服务
+      if (cleanPath === "/v1/weather") {
+        const { handleWeather } = await import("./routes/weather");
+        return handleWeather(request, env);
+      }
+
       // 路由：底层工具执行 (Agent 直接调用)
       // 注意：支持 /v1/execute 以及 /v1/execute/:toolName 两种语义 (RESTful 优雅架构)
       if (cleanPath.startsWith("/v1/execute") && method === "POST") {
