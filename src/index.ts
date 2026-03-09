@@ -180,7 +180,7 @@ export default {
 
       // 路由：MCP SSE 握手端点 (Agent 的第一步)
       if (cleanPath === "/v1/mcp/sse" && method === "GET") {
-        return handleMCPSse(request, env);
+        return handleMCPSse(request, env, ctx);
       }
 
       // 路由：MCP 消息接收端点 (Agent 的第二步)
