@@ -7,6 +7,7 @@ import { SkillKeys } from "./utils/skill-keys";
 import { handleProvision } from "./routes/admin";
 import { handleMCPRequest } from "./routes/mcp-server";
 import { handleExecuteSkill } from "./routes/execute-skill";
+import { handleAuthVerify } from "./routes/auth";
 import { errorResponse, corsHeaders, successResponse } from "./utils/response";
 import { SkillParser } from "./engine/parser";
 
@@ -138,6 +139,11 @@ export default {
 
 
       // ── POST Routes (Execution & Integration) ──
+
+      // 路由：API Key 校验 (Ping)
+      if (cleanPath === "/v1/auth/verify" && method === "GET") {
+        return handleAuthVerify(request, env);
+      }
 
       // 路由：Admin Provisioning
       if (cleanPath === "/v1/admin/provision" && method === "POST") {
