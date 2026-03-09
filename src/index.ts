@@ -185,7 +185,7 @@ export default {
 
       // 路由：MCP 消息接收端点 (Agent 的第二步)
       if (cleanPath === "/v1/mcp/message" && method === "POST") {
-        return handleMCPMessage(request, env, ctx);
+        return handleMCPMessage(request, env);
       }
 
       // 路由：天气查询服务
