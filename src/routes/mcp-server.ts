@@ -90,9 +90,11 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
                             const toolName = params.name;
                             const toolArguments = params.arguments;
 
-                            // 构造内部伪造请求调用核心执行器
-                            // 使用当前 GET 请求的验证头（如果存在）
-                            const authHeader = request.headers.get("Authorization") || "";
+                            // 优先级：1. POST 消息自带的验证头 2. GET 握手的验证头
+                            const msgAuth = payload.authHeader;
+                            const handshakeAuth = request.headers.get("Authorization") || "";
+                            const authHeader = msgAuth || handshakeAuth;
+
                             const executeUrl = new URL(request.url);
                             executeUrl.pathname = `/v1/execute/${toolName}`;
 
@@ -184,8 +186,12 @@ export async function handleMCPMessage(request: Request, env: Env): Promise<Resp
 
     console.log(`[MCP] ✍️ POST received, writing to KV Broker for session ${sessionId}`);
 
+    // 把当前请求的 Authorization 头也装进锦囊，传给监听者
+    const authHeader = request.headers.get("Authorization");
+    const brokerPayload = { ...payload, authHeader };
+
     // 将指令写进 KV 传达室！设置 5 分钟过期，防止垃圾数据堆积
-    await env.UNISKILL_KV.put(`mcp_msg:${sessionId}`, JSON.stringify(payload), { expirationTtl: 300 });
+    await env.UNISKILL_KV.put(`mcp_msg:${sessionId}`, JSON.stringify(brokerPayload), { expirationTtl: 300 });
 
     return new Response("Accepted", { status: 202 });
 }
