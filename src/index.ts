@@ -44,8 +44,8 @@ async function fetchSkillConfig(skillId: string, env: Env) {
   }
 
   const data = await response.json() as any;
-  // 逻辑：返回包含 endpoint, auth_header, plugin_hook 的 implementation 对象
-  return data.implementation;
+  // 逻辑：接口现在返回统一 JSON 结构，提取 config 项用于执行
+  return data.config || data.implementation;
 }
 
 
@@ -68,24 +68,46 @@ export default {
     if (method === "GET" && cleanPath === "/v1/skills") {
       console.log(`[DEBUG] GET Skills List`);
 
-      // 逻辑：列出所有以 'skill:' 开头的 KV 键（包括官方和私有）
-      // 注意：此简单实现假设官方技能都在 KV 中
-      const list = await env.UNISKILL_KV.list({ prefix: "skill:official:" });
+      // ── Step 1: Detect User (for Private Skills) ──
+      const authHeader = request.headers.get("Authorization") || "";
+      const rawKey = authHeader.replace("Bearer ", "").trim();
+      let keyHash: string | undefined = undefined;
+      if (rawKey.startsWith("us-")) {
+        keyHash = await hashKey(rawKey);
+      }
+
       const skills = [];
 
-      for (const key of list.keys) {
-        const raw = await env.UNISKILL_KV.get(key.name);
-        if (raw) {
-          try {
-            const spec = SkillParser.parse(raw);
-            skills.push({
-              id: key.name.replace("skill:official:", ""),
-              name: spec.name,
-              description: spec.description,
-              isOfficial: true
-            });
-          } catch (e) {
-            console.error(`Failed to parse skill ${key.name}:`, e);
+      // ── Step 2: Define Scan Categories ──
+      const scanCategories = [
+        { prefix: "skill:official:", source: "official" },
+        { prefix: "skill:market:", source: "market" }
+      ];
+
+      if (keyHash) {
+        scanCategories.unshift({ prefix: `skill:private:${keyHash}:`, source: "private" });
+      }
+
+      // ── Step 3: Execute Scans ──
+      for (const cat of scanCategories) {
+        const list = await env.UNISKILL_KV.list({ prefix: cat.prefix });
+        for (const key of list.keys) {
+          const raw = await env.UNISKILL_KV.get(key.name);
+          if (raw) {
+            try {
+              // 🔵 核心变革：直接解析 JSON，不再依赖 Markdown 引擎
+              const skill = JSON.parse(raw);
+              skills.push({
+                id: skill.id || key.name.split(':').pop(),
+                name: skill.meta?.name || skill.name,
+                description: skill.meta?.description || skill.description,
+                emoji: skill.meta?.emoji,
+                source: skill.source || cat.source,
+                isOfficial: (skill.source || cat.source) === "official"
+              });
+            } catch (e) {
+              console.error(`Failed to parse unified skill ${key.name}:`, e);
+            }
           }
         }
       }
@@ -103,26 +125,47 @@ export default {
         return errorResponse("Missing skill name", 400);
       }
 
-      // 逻辑：优先从官方库获取
-      let skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(skillName));
-      console.log(`[DEBUG] Skill Raw Found: ${!!skillRaw}`);
-      let isOfficial = true;
+      // ── Step 1: Detect User (for Private Skills) ──
+      const authHeader = request.headers.get("Authorization") || "";
+      const rawKey = authHeader.replace("Bearer ", "").trim();
+      let keyHash: string | undefined = undefined;
+      if (rawKey.startsWith("us-")) {
+        keyHash = await hashKey(rawKey);
+      }
+
+      // ── Step 2: Try resolve from multiple sources ──
+      let skillRaw: string | null = null;
+      let source: "official" | "private" | "market" = "official";
+
+      // 1. Private (if authenticated)
+      if (keyHash) {
+        skillRaw = await env.UNISKILL_KV.get(SkillKeys.private(keyHash, skillName));
+        if (skillRaw) source = "private";
+      }
+
+      // 2. Official
+      if (!skillRaw) {
+        skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(skillName));
+        if (skillRaw) source = "official";
+      }
+
+      // 3. Market
+      if (!skillRaw) {
+        skillRaw = await env.UNISKILL_KV.get(SkillKeys.market(skillName));
+        if (skillRaw) source = "market";
+      }
 
       if (!skillRaw) {
-        // TODO: 未来可在此扩展用户私有技能的查询逻辑
         return errorResponse("Skill Not Found", 404);
       }
 
-      // 逻辑：调用引擎 Parser 将 Markdown 解析为结构化 JSON
-      const parsedSpec = SkillParser.parse(skillRaw);
-
-      return new Response(JSON.stringify({
-        success: true,
-        spec: parsedSpec,
-        is_official: isOfficial
-      }), {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      // 🔵 极致简化：直接交给优化后的 SkillParser
+      const skill = SkillParser.parse(skillRaw);
+      return successResponse({
+        spec: skill,
+        source: skill.source || source,
+        is_official: (skill.source || source) === "official",
+        success: true // Compatibility
       });
     }
 
@@ -208,6 +251,7 @@ export default {
 
           if (!skillRaw) return new Response(`Skill [${skillName}] Not Found`, { status: 404, headers: corsHeaders });
 
+          // 🔵 极致简化：统一调用 SkillParser
           const spec = SkillParser.parse(skillRaw);
           implementation = spec.implementation;
         }

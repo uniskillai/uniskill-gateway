@@ -19,6 +19,11 @@ export interface SkillSpec {
         plugin_hook?: string;
         [key: string]: any;
     };
+    source?: string;
+    docs?: {
+        short: string;
+        full_md: string;
+    };
 }
 
 export const SkillParser = {
@@ -26,22 +31,43 @@ export const SkillParser = {
      * Logic: Parse raw Markdown text into a structured SkillSpec object
      * 逻辑：将原始 Markdown 文本解析为结构化的 SkillSpec 对象
      */
-    parse(markdown: string): SkillSpec {
+    parse(input: string): SkillSpec {
+        // ── Step 0: JSON Detection (Optimization for Unified Storage) ──
+        // 逻辑：如果输入已经是 JSON（大一统格式），则直接解析并返回标准 Spec
+        try {
+            if (input.trim().startsWith('{')) {
+                const unified = JSON.parse(input);
+                if (unified.config || unified.implementation) {
+                    return {
+                        name: unified.id || unified.meta?.name || "Unknown_Skill",
+                        description: unified.meta?.description || unified.docs?.short || "",
+                        parameters: unified.meta?.parameters || unified.config?.parameters || {},
+                        implementation: unified.config || unified.implementation,
+                        source: unified.source || "official",
+                        isOfficial: unified.source === "official",
+                        docs: unified.docs
+                    } as any;
+                }
+            }
+        } catch (e) {
+            // Not JSON, fallback to legacy Markdown parsing
+        }
+
         // ── Step 1: Extract Skill Name (H1) ──
         // 逻辑：匹配一级标题作为技能的全局唯一标识符
-        const nameMatch = markdown.match(/^#\s+(.+)/m);
+        const nameMatch = input.match(/^#\s+(.+)/m);
         const name = nameMatch ? nameMatch[1].trim() : "Unknown_Skill";
 
         // ── Step 2: Extract Description (Text block) ──
         // 逻辑：提取 ## Description 下的文本，并使用正则剔除 HTML 注释
-        const descMatch = markdown.match(/## Description\s*\n([\s\S]*?)(?=##|$)/);
+        const descMatch = input.match(/## Description\s*\n([\s\S]*?)(?=##|$)/);
         const description = descMatch
             ? descMatch[1].replace(/<!--[\s\S]*?-->/g, '').trim()
             : "";
 
         // ── Step 3: Extract Parameters (JSON block) ──
         // 逻辑：精准提取 ```json 和 ``` 之间的内容并反序列化
-        const jsonMatch = markdown.match(/```json\s*\n([\s\S]*?)\n\s*```/);
+        const jsonMatch = input.match(/```json\s*\n([\s\S]*?)\n\s*```/);
         let parameters = {};
         if (jsonMatch) {
             try {
@@ -53,7 +79,7 @@ export const SkillParser = {
 
         // ── Step 4: Extract Implementation (YAML block) ──
         // 逻辑：精准提取 ```yaml 和 ``` 之间的内容，转换为 JS 对象
-        const yamlMatch = markdown.match(/```yaml\s*\n([\s\S]*?)\n\s*```/);
+        const yamlMatch = input.match(/```yaml\s*\n([\s\S]*?)\n\s*```/);
         let implementation: any = { type: 'unknown' };
         if (yamlMatch) {
             try {
@@ -65,7 +91,7 @@ export const SkillParser = {
 
         // ── Step 5: Extract Returns (JSON block under ## Returns) ──
         // 逻辑：利用正则提取 Markdown 中的 ## Returns 区块
-        const returnsMatch = markdown.match(/## Returns\s+```json\s+([\s\S]*?)\s+```/);
+        const returnsMatch = input.match(/## Returns\s+```json\s+([\s\S]*?)\s+```/);
 
         let parsedReturns = null;
         if (returnsMatch && returnsMatch[1]) {
