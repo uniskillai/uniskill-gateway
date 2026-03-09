@@ -5,6 +5,8 @@
 import { hashKey } from "./utils/auth";
 import { SkillKeys } from "./utils/skill-keys";
 import { handleProvision } from "./routes/admin";
+import { handleMCPRequest } from "./routes/mcp-server";
+import { handleExecuteSkill } from "./routes/execute-skill";
 import { errorResponse, corsHeaders, successResponse } from "./utils/response";
 import { SkillParser } from "./engine/parser";
 
@@ -64,24 +66,31 @@ export default {
 
         for (const cat of scanCategories) {
           const list = await env.UNISKILL_KV.list({ prefix: cat.prefix });
-          for (const key of list.keys) {
+
+          // 逻辑：将耗时的串行 GET 改为并行的 Promise.all 进行并发请求优化
+          const fetchPromises = list.keys.map(async (key) => {
             const raw = await env.UNISKILL_KV.get(key.name);
             if (raw) {
               try {
                 const skill = JSON.parse(raw);
-                skills.push({
+                return {
                   id: skill.id || key.name.split(':').pop(),
                   name: skill.meta?.name || skill.name,
                   description: skill.meta?.description || skill.description,
                   emoji: skill.meta?.emoji,
                   source: skill.source || cat.source,
                   isOfficial: (skill.source || cat.source) === "official"
-                });
+                };
               } catch (e) {
                 console.error(`Failed to parse unified skill ${key.name}:`, e);
+                return null;
               }
             }
-          }
+            return null;
+          });
+
+          const parsedSkills = (await Promise.all(fetchPromises)).filter(Boolean);
+          skills.push(...parsedSkills);
         }
         return successResponse({ data: skills });
       }
@@ -142,14 +151,12 @@ export default {
 
       // 路由：标准 MCP 协议请求
       if (cleanPath === "/v1/mcp" && method === "POST") {
-        const { handleMCPRequest } = await import("./routes/mcp-server");
         return handleMCPRequest(request, env, ctx);
       }
 
       // 路由：底层工具执行 (Agent 直接调用)
-      // 注意：这里我们移除了对外暴露的 /v1/basic-connector，确保它是底层引擎而不是公共菜单
-      if (cleanPath.startsWith("/v1/execute/") && method === "POST") {
-        const { handleExecuteSkill } = await import("./routes/execute-skill");
+      // 注意：支持 /v1/execute 以及 /v1/execute/:toolName 两种语义 (RESTful 优雅架构)
+      if (cleanPath.startsWith("/v1/execute") && method === "POST") {
         return handleExecuteSkill(request, env, ctx);
       }
 
@@ -163,7 +170,6 @@ export default {
     // ── Legacy Compatibility ──
     // 兼容根目录直接 POST
     if (path === "/" && method === "POST") {
-      const { handleExecuteSkill } = await import("./routes/execute-skill");
       return handleExecuteSkill(request, env, ctx);
     }
 

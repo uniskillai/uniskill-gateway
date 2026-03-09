@@ -3,8 +3,8 @@
 
 import type { Env } from "../index";
 import { errorResponse } from "../utils/response";
-// 引入主网关，实现优雅的自递归调用
-import worker from "../index";
+// 静态导入核心执行网关，消除循环依赖
+import { handleExecuteSkill } from "./execute-skill";
 
 export async function handleMCPRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     // 逻辑：MCP 协议要求必须是 POST 请求传输 JSON-RPC 消息
@@ -104,8 +104,8 @@ export async function handleMCPRequest(request: Request, env: Env, ctx: Executio
                 body: JSON.stringify(toolArguments || {})
             });
 
-            // 核心联动：递归调用 worker 本身，体验极致代码复用
-            const response = await worker.fetch(internalRequest, env, ctx);
+            // 核心联动：直接调用纯净的执行网关，复用全部鉴权、计费、清洗逻辑
+            const response = await handleExecuteSkill(internalRequest, env, ctx);
 
             if (!response.ok) {
                 const errText = await response.text();
