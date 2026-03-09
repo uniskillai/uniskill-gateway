@@ -7,7 +7,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const GATEWAY_ROOT = path.resolve(__dirname, '..');
-const DOCS_DIR = GATEWAY_ROOT;
+const DOCS_DIR = path.join(GATEWAY_ROOT, 'docs');
 const SRC_DIR = path.join(GATEWAY_ROOT, 'src');
 
 /**

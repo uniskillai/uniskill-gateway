@@ -40,7 +40,7 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore(docs): auto-sync documentation from source logic [skip ci]"
-          file_pattern: "*.mdx"
+          file_pattern: "docs/*.mdx"
           commit_user_name: "UniSkill Bot"
           commit_user_email: "bot@uniskill.ai"
 
@@ -49,4 +49,5 @@ jobs:
 
       - name: Run Mintlify Validate
         run: |
+          cd docs
           mintlify validate
