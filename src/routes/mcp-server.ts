@@ -46,7 +46,7 @@ export async function handleMCPRequest(request: Request, env: Env, ctx: Executio
                     name: skill.id, // e.g., "uniskill_weather"
                     description: skill.meta?.description || skill.docs?.description || "No description provided.",
                     // 逻辑：直接读取预存的 JSON Schema (参数)
-                    inputSchema: skill.docs?.parameters ? JSON.parse(skill.docs.parameters) : { type: "object", properties: {} }
+                    inputSchema: skill.meta?.parameters || { type: "object", properties: {} }
                 });
             }
         }
