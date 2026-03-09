@@ -179,8 +179,22 @@ export default {
       }
 
       // 路由：标准 MCP 协议请求
-      if (cleanPath === "/v1/mcp" && method === "POST") {
-        return handleMCPRequest(request, env, ctx);
+      if (cleanPath === "/v1/mcp") {
+        // 逻辑：处理 mcporter 首次发起的 GET 握手/健康检查请求
+        if (method === "GET") {
+          console.log(`[MCP] Received GET handshake request from Agent`);
+          // 如果 mcporter 期望 SSE 流，这里我们先返回一个友好的 200 OK 兼容探针
+          // 注意：某些严格的 MCP 客户端可能强制要求返回 Content-Type: text/event-stream
+          return new Response("UniSkill MCP Server is online and ready.", {
+            status: 200,
+            headers: { "Content-Type": "text/plain", ...corsHeaders }
+          });
+        }
+
+        // 逻辑：处理实际的 JSON-RPC 指令
+        if (method === "POST") {
+          return handleMCPRequest(request, env, ctx);
+        }
       }
 
       // 路由：底层工具执行 (Agent 直接调用)
