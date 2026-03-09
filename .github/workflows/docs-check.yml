@@ -11,6 +11,7 @@ on:
     paths:
       - "src/**"
       - "docs/**"
+      - "*.mdx"
 
 jobs:
   sync-and-validate:

@@ -58,24 +58,30 @@ function extractSkillCosts(): Record<string, number> {
  * Updates a file by replacing content between markers
  */
 function updateFileWithMarkers(filePath: string, marker: string, newContent: string) {
-    const fullPath = path.join(DOCS_DIR, filePath);
-    if (!fs.existsSync(fullPath)) return;
+    const paths = [
+        path.join(GATEWAY_ROOT, filePath),
+        path.join(GATEWAY_ROOT, 'docs', filePath)
+    ];
 
-    let content = fs.readFileSync(fullPath, 'utf-8');
-    const startMarker = `{/* AUTO_GEN:${marker}_START */}`;
-    const endMarker = `{/* AUTO_GEN:${marker}_END */}`;
+    for (const fullPath of paths) {
+        if (!fs.existsSync(fullPath)) continue;
 
-    const startIndex = content.indexOf(startMarker);
-    const endIndex = content.indexOf(endMarker);
+        let content = fs.readFileSync(fullPath, 'utf-8');
+        const startMarker = `{/* AUTO_GEN:${marker}_START */}`;
+        const endMarker = `{/* AUTO_GEN:${marker}_END */}`;
 
-    if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
-        content = content.substring(0, startIndex) +
-            startMarker + '\n' + newContent + '\n' +
-            content.substring(endIndex);
-        fs.writeFileSync(fullPath, content);
-        console.log(`Updated ${filePath} [${marker}]`);
-    } else {
-        console.warn(`Marker ${marker} not found in ${filePath}`);
+        const startIndex = content.indexOf(startMarker);
+        const endIndex = content.indexOf(endMarker);
+
+        if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+            content = content.substring(0, startIndex) +
+                startMarker + '\n' + newContent + '\n' +
+                content.substring(endIndex);
+            fs.writeFileSync(fullPath, content);
+            console.log(`Updated ${fullPath} [${marker}]`);
+        } else {
+            console.warn(`Marker ${marker} not found in ${fullPath}`);
+        }
     }
 }
 
