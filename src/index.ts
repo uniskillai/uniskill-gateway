@@ -179,6 +179,13 @@ export default {
       return handleProvision(request, env);
     }
 
+    // ── Route: MCP Protocol Server ──
+    if (path === "/v1/mcp" && request.method === "POST") {
+      // Lazy import to avoid circular dependency in top level
+      const { handleMCPRequest } = await import("./routes/mcp-server");
+      return handleMCPRequest(request, env, ctx);
+    }
+
     // ── Route: Basic Connector (Transparent Proxy) ──
     if (path === "/v1/basic-connector" && request.method === "POST") {
       const authHeader = request.headers.get("Authorization") || "";
