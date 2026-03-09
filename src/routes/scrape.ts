@@ -4,7 +4,7 @@
 import type { Env } from "../index";
 import { errorResponse } from "../utils/response";
 
-export async function handleScrape(request: Request, _env: Env): Promise<Response> {
+export async function handleScrape(request: Request, env: Env): Promise<Response> {
     const corsHeaders = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
