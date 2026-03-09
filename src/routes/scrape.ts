@@ -34,9 +34,13 @@ export async function handleScrape(request: Request, _env: Env): Promise<Respons
 
         console.log(`[Scrape] Fetching Markdown for: ${targetUrl}`);
 
-        // 核心魔法：直接调 Jina，什么头都不带，就让它给纯文本 Markdown
+        // 核心魔法：带上您的专属 Key，但不带 Accept: application/json，逼它吐 Markdown
         const jinaUrl = `https://r.jina.ai/${targetUrl}`;
-        const response = await fetch(jinaUrl);
+        const response = await fetch(jinaUrl, {
+            headers: {
+                "Authorization": `Bearer ${env.JINA_API_KEY}`
+            }
+        });
 
         if (!response.ok) {
             throw new Error(`Upstream Scraper returned HTTP ${response.status}`);
