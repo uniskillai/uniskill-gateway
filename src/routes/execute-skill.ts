@@ -73,6 +73,17 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         return handleWeather(syntheticRequest, env);
     }
 
+    if (normalizedSkillName === "uniskill_scrape") {
+        // Logic: Scrape MD endpoint points back to this gateway — intercept to prevent infinite loop
+        const syntheticRequest = new Request(request.url, {
+            method: request.method,
+            headers: request.headers,
+            body: JSON.stringify(body.params || body)
+        });
+        const { handleScrape } = await import("./scrape");
+        return handleScrape(syntheticRequest, env);
+    }
+
     const params = body.params || body;
 
     try {

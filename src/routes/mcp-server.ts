@@ -114,6 +114,21 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
                                     } catch {
                                         finalOutput = formatToolResponse(resultRaw);
                                     }
+                                } else if (normalizedToolName === "uniskill_scrape") {
+                                    // Logic: Short-circuit for scrape to avoid infinite loop (MD endpoint points to this gateway)
+                                    const { handleScrape } = await import("./scrape");
+                                    const scrapeRequest = new Request(request.url, {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json", "Authorization": authHeader },
+                                        body: JSON.stringify(toolArguments || {})
+                                    });
+                                    const scrapeResp = await handleScrape(scrapeRequest, env);
+                                    const resultRaw = await scrapeResp.text();
+                                    try {
+                                        finalOutput = formatToolResponse(JSON.parse(resultRaw));
+                                    } catch {
+                                        finalOutput = formatToolResponse(resultRaw);
+                                    }
                                 } else {
                                     const executeUrl = new URL(request.url);
                                     executeUrl.pathname = `/v1/execute/${toolName}`;
