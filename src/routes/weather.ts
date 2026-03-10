@@ -44,19 +44,37 @@ export async function handleWeather(request: Request, _env: Env): Promise<Respon
             throw new Error(`Upstream API returned ${response.status}`);
         }
 
-        const data: any = await response.json();
+        const rawText = await response.text();
+        let data: any;
+        try {
+            data = JSON.parse(rawText);
+        } catch (e: any) {
+            // Logic: Robust parsing for pretty-printed or slightly malformed upstream JSON
+            throw new Error(`Failed to parse weather JSON: ${e.message}`);
+        }
 
-        // 4. 提取核心气象数据，精简返回体，防止撑爆大模型上下文
-        const currentWeather = data.current_condition?.[0] || {};
-        const weatherDesc = currentWeather.lang_zh?.[0]?.value || currentWeather.weatherDesc?.[0]?.value || "Unknown";
+        // 4. 提取核心气象数据，精简返回体，符合 formatters 结构
+        const current = data.current_condition?.[0] || {};
+        const area = data.nearest_area?.[0] || {};
+        const todayForecast = data.weather?.[0] || {};
+
+        const weatherDesc = current.lang_zh?.[0]?.value || current.weatherDesc?.[0]?.value || "Unknown";
 
         const finalResult = {
-            location: location,
-            temperature_c: currentWeather.temp_C,
-            condition: weatherDesc,
-            humidity: currentWeather.humidity,
-            wind_kph: currentWeather.windspeedKmph,
-            observation_time: currentWeather.observation_time
+            location: `${area.areaName?.[0]?.value || location}, ${area.country?.[0]?.value || ""}`,
+            current: {
+                condition: weatherDesc,
+                temperature: `${current.temp_C}°C`,
+                humidity: `${current.humidity}%`,
+                wind: `${current.windspeedKmph} km/h`
+            },
+            forecast: [
+                {
+                    date: todayForecast.date,
+                    avg_temp: `${todayForecast.avgtempC}°C`,
+                    condition: todayForecast.hourly?.[0]?.weatherDesc?.[0]?.value || "Clear"
+                }
+            ]
         };
 
         return new Response(JSON.stringify({ status: "success", data: finalResult }), {
