@@ -5,14 +5,18 @@
  * @returns string - JSON stringified results
  */
 export function formatNews(data: any): string {
-    const articles = data.articles || [];
-    if (articles.length === 0) return "No recent news found.";
+    // Tavily Search API returns data in `results`
+    const articles = data.results || data.articles || [];
+
+    if (articles.length === 0) {
+        return "No recent news found.";
+    }
 
     const cleanedArticles = articles.slice(0, 8).map((article: any) => ({
         title: article.title,
         url: article.url,
-        publishedAt: article.publishedAt,
-        description: article.description?.substring(0, 200)
+        publishedAt: article.published_date || article.publishedAt,
+        description: (article.content || article.description || "").substring(0, 300)
     }));
 
     return JSON.stringify({
