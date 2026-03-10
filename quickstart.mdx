@@ -1,0 +1,39 @@
+---
+title: "Quickstart"
+description: "Start building with UniSkill in under 5 minutes."
+---
+
+## 1. Get your API Key
+
+Visit the [UniSkill Dashboard](https://uniskill.ai/dashboard) to retrieve your API key.
+
+### Quick Setup (Recommended)
+
+Run our automated setup script to instantly configure UniSkill skills for your environment:
+
+```bash
+curl -fsSL https://uniskill.ai/connect.sh | bash -s -- YOUR_API_KEY
+```
+
+## 2. Make your first request
+
+Test your key using `curl`:
+
+```bash
+curl https://api.uniskill.ai/v1/search \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Hello UniSkill"}'
+```
+
+## 3. Monitor your Usage
+
+Every UniSkill response includes diagnostic headers. You don't need a separate API to check your balance; just look at the headers of any request:
+
+- `X-UniSkill-Balance`: Your remaining credits.
+- `X-RateLimit-Remaining`: Your remaining requests for the current minute.
+
+## 4. Next Steps
+
+- Explore [Web Search](/api-reference/search) for more search parameters.
+- Learn about [Credits & Billing](/credits) policies.
