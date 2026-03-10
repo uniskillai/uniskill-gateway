@@ -64,36 +64,29 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
 
     try {
         // ── Step 3: Resolve Skill Implementation and Cost ──
+        // Logic: KV is the primary read source (edge-local, low latency).
+        //        Registry API is the fallback (network I/O, used only on KV miss).
+        //        On Registry hit, write back to KV for future caching.
         let implementation: any;
         let skillCost = 1; // Default fallback
 
-        try {
-            console.log(`[DEBUG] Attempting dynamic config fetch for: ${skillName}`);
-            const data = await fetchSkillConfig(skillName, env);
-            implementation = data.config || data.implementation;
+        // ── 3a: KV Read (Primary) ──
+        let skillRaw = await env.UNISKILL_KV.get(SkillKeys.private(keyHash, skillName));
+        if (!skillRaw) {
+            skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(skillName));
+        }
+        // Normalize short names: "search" -> "uniskill_search"
+        if (!skillRaw && !skillName.startsWith("uniskill_")) {
+            const normalizedName = `uniskill_${skillName}`;
+            skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(normalizedName));
+            if (skillRaw) skillName = normalizedName;
+        }
 
-            if (data.meta && data.meta.cost !== undefined) {
-                skillCost = Number(data.meta.cost);
-            }
-        } catch (e) {
-            console.warn(`[DEBUG] Dynamic config fetch failed, falling back to KV:`, e);
-
-            let skillRaw = await env.UNISKILL_KV.get(SkillKeys.private(keyHash, skillName));
-            if (!skillRaw) {
-                skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(skillName));
-            }
-            if (!skillRaw && !skillName.startsWith("uniskill_")) {
-                const normalizedName = `uniskill_${skillName}`;
-                skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(normalizedName));
-                if (skillRaw) skillName = normalizedName;
-            }
-
-            if (!skillRaw) return new Response(`Skill [${skillName}] Not Found`, { status: 404, headers: corsHeaders });
-
+        if (skillRaw) {
+            // KV Hit: Parse the cached skill data
             const spec = SkillParser.parse(skillRaw);
             implementation = spec.implementation || (spec as any).config;
 
-            // Try extracting cost manually from unified JSON
             try {
                 if (skillRaw.trim().startsWith('{')) {
                     const unified = JSON.parse(skillRaw);
@@ -104,6 +97,30 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
                     }
                 }
             } catch (jsonErr) { }
+        } else {
+            // ── 3b: Registry API Fallback (on KV miss) ──
+            console.log(`[DEBUG] KV miss for skill [${skillName}], falling back to Registry API.`);
+            try {
+                const data = await fetchSkillConfig(skillName, env);
+                implementation = data.config || data.implementation;
+
+                if (data.meta && data.meta.cost !== undefined) {
+                    skillCost = Number(data.meta.cost);
+                }
+
+                // Write-back to KV to warm the cache for the next request
+                if (implementation) {
+                    ctx.waitUntil(
+                        env.UNISKILL_KV.put(SkillKeys.official(skillName), JSON.stringify(data), { expirationTtl: 3600 })
+                    );
+                }
+            } catch (e) {
+                console.warn(`[DEBUG] Registry API fetch also failed for [${skillName}]:`, e);
+            }
+        }
+
+        if (!implementation) {
+            return new Response(`Skill [${skillName}] Not Found`, { status: 404, headers: corsHeaders });
         }
 
         // ── Step 4: Rate Limit Check ──
