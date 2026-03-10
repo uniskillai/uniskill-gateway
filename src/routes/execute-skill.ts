@@ -63,8 +63,14 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     // Logic: Short-circuit for skills with native gateway handlers (bypass generic executor)
     const normalizedSkillName = skillName.startsWith("uniskill_") ? skillName : `uniskill_${skillName}`;
     if (normalizedSkillName === "uniskill_weather") {
+        // Body is already consumed above; re-create a synthetic request with the parsed body
+        const syntheticRequest = new Request(request.url, {
+            method: request.method,
+            headers: request.headers,
+            body: JSON.stringify(body.params || body)
+        });
         const { handleWeather } = await import("./weather");
-        return handleWeather(request, env);
+        return handleWeather(syntheticRequest, env);
     }
 
     const params = body.params || body;
