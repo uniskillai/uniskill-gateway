@@ -187,16 +187,24 @@ export default {
         return handleMCPMessage(request, env);
       }
 
-      // 路由：天气查询服务
+      // 路由：天气查询服务 — 走 handleExecuteSkill 以保证鉴权 + 计费
       if (cleanPath === "/v1/weather") {
-        const { handleWeather } = await import("./routes/weather");
-        return handleWeather(request, env);
+        const rewrite = new Request(new URL("/v1/execute/uniskill_weather", request.url).toString(), {
+          method: "POST",
+          headers: request.headers,
+          body: request.body
+        });
+        return handleExecuteSkill(rewrite, env, ctx);
       }
 
-      // 路由：刮削与搜索语义化入口 (支持 RESTful 直接调用)
+      // 路由：网页抓取入口 — 走 handleExecuteSkill 以保证鉴权 + 计费
       if (cleanPath === "/v1/scrape") {
-        const { handleScrape } = await import("./routes/scrape");
-        return handleScrape(request, env);
+        const rewrite = new Request(new URL("/v1/execute/uniskill_scrape", request.url).toString(), {
+          method: "POST",
+          headers: request.headers,
+          body: request.body
+        });
+        return handleExecuteSkill(rewrite, env, ctx);
       }
 
       if (cleanPath === "/v1/search" && method === "POST") {
