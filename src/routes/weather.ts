@@ -1,11 +1,19 @@
 // uniskill-gateway/src/routes/weather.ts
-// Logic: Weather fetcher using the open wttr.in API (No API Key required)
+// Logic: Weather fetcher using Open-Meteo API (no API key, globally reliable)
 
 import type { Env } from "../index";
 import { errorResponse } from "../utils/response";
 
+const WMO_CODE_MAP: Record<number, string> = {
+    0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Icy fog", 51: "Light drizzle", 53: "Moderate drizzle",
+    55: "Dense drizzle", 61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+    71: "Slight snow", 73: "Moderate snow", 75: "Heavy snow",
+    80: "Slight showers", 81: "Moderate showers", 82: "Violent showers",
+    95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with heavy hail",
+};
+
 export async function handleWeather(request: Request, _env: Env): Promise<Response> {
-    // 1. 极其严谨的跨域头部
     const corsHeaders = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -16,63 +24,57 @@ export async function handleWeather(request: Request, _env: Env): Promise<Respon
         return new Response(null, { headers: corsHeaders });
     }
 
-    // 2. 兼容 GET 和 POST 两种传参方式
-    let location = "London"; // 默认兜底
+    let location = "London";
 
     try {
         if (request.method === "POST") {
             const body: any = await request.json();
-            if (body.location || body.query) {
-                location = body.location || body.query;
-            }
+            location = body.location || body.query || location;
         } else if (request.method === "GET") {
             const url = new URL(request.url);
-            const queryLoc = url.searchParams.get("location") || url.searchParams.get("query");
-            if (queryLoc) location = queryLoc;
+            location = url.searchParams.get("location") || url.searchParams.get("query") || location;
         }
 
         console.log(`[Weather] Fetching data for: ${location}`);
 
-        // 3. 调用极客专属开源 API (wttr.in)，加上 format=j1 获取纯净 JSON
-        const targetUrl = `https://wttr.in/${encodeURIComponent(location)}?format=j1`;
+        // Step 1: Geocoding — 城市名 → 经纬度 (Open-Meteo Geocoding API)
+        const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`;
+        const geoRes = await fetch(geoUrl);
+        if (!geoRes.ok) throw new Error(`Geocoding API returned ${geoRes.status}`);
 
-        const response = await fetch(targetUrl, {
-            headers: { "Accept-Language": "zh-CN,en;q=0.9" } // 支持中文返回
-        });
-
-        if (!response.ok) {
-            throw new Error(`Upstream API returned ${response.status}`);
+        const geoData: any = await geoRes.json();
+        if (!geoData.results || geoData.results.length === 0) {
+            return new Response(JSON.stringify({ status: "error", error: `Location not found: ${location}` }), {
+                status: 404,
+                headers: { "Content-Type": "application/json", ...corsHeaders }
+            });
         }
 
-        const rawText = await response.text();
-        let data: any;
-        try {
-            data = JSON.parse(rawText);
-        } catch (e: any) {
-            // Logic: Robust parsing for pretty-printed or slightly malformed upstream JSON
-            throw new Error(`Failed to parse weather JSON: ${e.message}`);
-        }
+        const { latitude, longitude, name, country } = geoData.results[0];
 
-        // 4. 提取核心气象数据，精简返回体，符合 formatters 结构
-        const current = data.current_condition?.[0] || {};
-        const area = data.nearest_area?.[0] || {};
-        const todayForecast = data.weather?.[0] || {};
+        // Step 2: Weather — 经纬度 → 实时气象 (Open-Meteo Weather API)
+        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=1`;
+        const weatherRes = await fetch(weatherUrl);
+        if (!weatherRes.ok) throw new Error(`Weather API returned ${weatherRes.status}`);
 
-        const weatherDesc = current.lang_zh?.[0]?.value || current.weatherDesc?.[0]?.value || "Unknown";
+        const weatherData: any = await weatherRes.json();
+        const cur = weatherData.current;
+        const daily = weatherData.daily;
 
         const finalResult = {
-            location: `${area.areaName?.[0]?.value || location}, ${area.country?.[0]?.value || ""}`,
+            location: `${name}, ${country}`,
             current: {
-                condition: weatherDesc,
-                temperature: `${current.temp_C}°C`,
-                humidity: `${current.humidity}%`,
-                wind: `${current.windspeedKmph} km/h`
+                condition: WMO_CODE_MAP[cur.weather_code] || `WMO ${cur.weather_code}`,
+                temperature: `${cur.temperature_2m}°C`,
+                humidity: `${cur.relative_humidity_2m}%`,
+                wind: `${cur.wind_speed_10m} km/h`
             },
             forecast: [
                 {
-                    date: todayForecast.date,
-                    avg_temp: `${todayForecast.avgtempC}°C`,
-                    condition: todayForecast.hourly?.[0]?.weatherDesc?.[0]?.value || "Clear"
+                    date: daily.time?.[0],
+                    max_temp: `${daily.temperature_2m_max?.[0]}°C`,
+                    min_temp: `${daily.temperature_2m_min?.[0]}°C`,
+                    condition: WMO_CODE_MAP[daily.weather_code?.[0]] || "Unknown"
                 }
             ]
         };
