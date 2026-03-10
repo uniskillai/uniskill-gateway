@@ -13,30 +13,37 @@
       "url": "https://uniskill.ai/dashboard"
     }
   ],
-  "navigation": [
-    {
-      "group": "Getting Started",
-      "pages": [
-        "introduction",
-        "quickstart"
-      ]
-    },
-    {
-      "group": "Core Concepts",
-      "pages": [
-        "credits",
-        "rate-limits"
-      ]
-    },
-    {
-      "group": "Skill Catalog",
-      "pages": [
-        "api-reference/search",
-        "api-reference/scrape",
-        "api-reference/basic-connector"
-      ]
-    }
-  ],
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Docs",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "credits",
+              "rate-limits"
+            ]
+          },
+          {
+            "group": "Skill Catalog",
+            "pages": [
+              "api-reference/search",
+              "api-reference/scrape",
+              "api-reference/basic-connector"
+            ]
+          }
+        ]
+      }
+    ]
+  },
   "footerSocials": {
     "github": "https://github.com/uniskillai",
     "x": "https://x.com/Lemontree2050"
