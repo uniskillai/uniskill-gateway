@@ -95,29 +95,48 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
                             const handshakeAuth = request.headers.get("Authorization") || "";
                             const authHeader = msgAuth || handshakeAuth;
 
-                            const executeUrl = new URL(request.url);
-                            executeUrl.pathname = `/v1/execute/${toolName}`;
-
-                            const internalRequest = new Request(executeUrl.toString(), {
-                                method: "POST",
-                                headers: {
-                                    "Authorization": authHeader,
-                                    "Content-Type": "application/json"
-                                },
-                                body: JSON.stringify(toolArguments || {})
-                            });
-
                             let finalOutput = "";
                             try {
-                                const response = await handleExecuteSkill(internalRequest, env, ctx);
-                                const resultRaw = await response.text();
+                                const normalizedToolName = toolName.startsWith("uniskill_") ? toolName : `uniskill_${toolName}`;
 
-                                // 处理可能是 JSON 的字符串
-                                try {
-                                    const parsed = JSON.parse(resultRaw);
-                                    finalOutput = formatToolResponse(parsed);
-                                } catch {
-                                    finalOutput = formatToolResponse(resultRaw);
+                                // Logic: Short-circuit for weather skill to avoid wttr.in timeout
+                                if (normalizedToolName === "uniskill_weather") {
+                                    const { handleWeather } = await import("./weather");
+                                    const weatherRequest = new Request(request.url, {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json", "Authorization": authHeader },
+                                        body: JSON.stringify(toolArguments || {})
+                                    });
+                                    const weatherResp = await handleWeather(weatherRequest, env);
+                                    const resultRaw = await weatherResp.text();
+                                    try {
+                                        finalOutput = formatToolResponse(JSON.parse(resultRaw));
+                                    } catch {
+                                        finalOutput = formatToolResponse(resultRaw);
+                                    }
+                                } else {
+                                    const executeUrl = new URL(request.url);
+                                    executeUrl.pathname = `/v1/execute/${toolName}`;
+
+                                    const internalRequest = new Request(executeUrl.toString(), {
+                                        method: "POST",
+                                        headers: {
+                                            "Authorization": authHeader,
+                                            "Content-Type": "application/json"
+                                        },
+                                        body: JSON.stringify(toolArguments || {})
+                                    });
+
+                                    const response = await handleExecuteSkill(internalRequest, env, ctx);
+                                    const resultRaw = await response.text();
+
+                                    // 处理可能是 JSON 的字符串
+                                    try {
+                                        const parsed = JSON.parse(resultRaw);
+                                        finalOutput = formatToolResponse(parsed);
+                                    } catch {
+                                        finalOutput = formatToolResponse(resultRaw);
+                                    }
                                 }
                             } catch (apiError: any) {
                                 finalOutput = `[Tool Execution Failed] Upstream API Error: ${apiError.message || "Unknown error"}`;
