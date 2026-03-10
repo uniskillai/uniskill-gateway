@@ -24,7 +24,7 @@ async function fetchSkillConfig(skillId: string, env: Env) {
     }
 
     const data = await response.json() as any;
-    return data.config || data.implementation;
+    return data; // Return full unified skill object
 }
 
 export async function handleExecuteSkill(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -50,8 +50,6 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     }
 
     // Logic: Resolve skillName from path or body
-    // e.g. /v1/execute/uniskill_search -> index 3 is "uniskill_search"
-    //      /v1/search -> (Legacy, let's keep backward compat for now by fallback to body or path[2])
     let skillName = path.startsWith("/v1/execute/") ? path.split("/")[3] : path.split("/")[2];
 
     if (!skillName) {
@@ -65,12 +63,18 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     const params = body.params || body;
 
     try {
-        // ── Step 3: Resolve Skill Implementation (Dynamic or KV) ──
+        // ── Step 3: Resolve Skill Implementation and Cost ──
         let implementation: any;
+        let skillCost = 1; // Default fallback
 
         try {
             console.log(`[DEBUG] Attempting dynamic config fetch for: ${skillName}`);
-            implementation = await fetchSkillConfig(skillName, env);
+            const data = await fetchSkillConfig(skillName, env);
+            implementation = data.config || data.implementation;
+
+            if (data.meta && data.meta.cost !== undefined) {
+                skillCost = Number(data.meta.cost);
+            }
         } catch (e) {
             console.warn(`[DEBUG] Dynamic config fetch failed, falling back to KV:`, e);
 
@@ -88,6 +92,18 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
 
             const spec = SkillParser.parse(skillRaw);
             implementation = spec.implementation || (spec as any).config;
+
+            // Try extracting cost manually from unified JSON
+            try {
+                if (skillRaw.trim().startsWith('{')) {
+                    const unified = JSON.parse(skillRaw);
+                    if (unified.meta && unified.meta.cost !== undefined) {
+                        skillCost = Number(unified.meta.cost);
+                    } else if (unified.costPerCall !== undefined) {
+                        skillCost = Number(unified.costPerCall);
+                    }
+                }
+            } catch (jsonErr) { }
         }
 
         // ── Step 4: Rate Limit Check ──
@@ -102,16 +118,10 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         let currentCredits = await getCredits(env.UNISKILL_KV, keyHash);
         if (currentCredits === -1) currentCredits = 0;
 
-        let skillCost = 1;
-        if (skillName === "uniskill_search" || skillName === "uniskill_news" || skillName === "news") {
-            skillCost = 10;
-        } else if (skillName === "uniskill_scrape" || skillName === "scrape") {
-            skillCost = 20;
-        } else if (skillName === "uniskill_weather" || skillName === "weather") {
-            skillCost = 0;
-        } else if (implementation.meta?.cost !== undefined) {
+        // Fallback checks just in case the cost wasn't found in meta
+        if (implementation && implementation.meta?.cost !== undefined) {
             skillCost = Number(implementation.meta.cost);
-        } else if (implementation.costPerCall !== undefined) {
+        } else if (implementation && implementation.costPerCall !== undefined) {
             skillCost = Number(implementation.costPerCall);
         }
 
