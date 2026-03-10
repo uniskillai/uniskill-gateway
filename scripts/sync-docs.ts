@@ -70,7 +70,7 @@ function updateFileWithMarkers(filePath: string, marker: string, newContent: str
 
     if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
         content = content.substring(0, startIndex) +
-            startMarker + '\n' + newContent + '\n' +
+            startMarker + '\n\n' + newContent + '\n\n' +
             content.substring(endIndex);
         fs.writeFileSync(fullPath, content);
         console.log(`Updated ${filePath} [${marker}]`);
