@@ -60,6 +60,13 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         return new Response("Missing skillName", { status: 400, headers: corsHeaders });
     }
 
+    // Logic: Short-circuit for skills with native gateway handlers (bypass generic executor)
+    const normalizedSkillName = skillName.startsWith("uniskill_") ? skillName : `uniskill_${skillName}`;
+    if (normalizedSkillName === "uniskill_weather") {
+        const { handleWeather } = await import("./weather");
+        return handleWeather(request, env);
+    }
+
     const params = body.params || body;
 
     try {
