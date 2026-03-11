@@ -12,7 +12,7 @@ import { SkillKeys } from "./skill-keys";
 export async function getCredits(kv: KVNamespace, keyHash: string): Promise<number> {
     const raw = await kv.get(SkillKeys.credits(keyHash));
     if (raw === null) return -1;
-    const credits = parseInt(raw, 10);
+    const credits = parseFloat(raw);
     return isNaN(credits) ? 0 : credits;
 }
 
@@ -70,7 +70,7 @@ export async function deductCredit(
     adminKey?: string,
     skillName = "unknown"
 ): Promise<void> {
-    const newBalance = currentCredits - cost;
+    const newBalance = Math.round((currentCredits - cost) * 100) / 100;
 
     // Step 1: 写回 KV（使用标准 Key）
     await kv.put(SkillKeys.credits(keyHash), String(newBalance));

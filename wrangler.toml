@@ -39,7 +39,7 @@ id = "9f388e510ffc426c8320f839ae769fe3"
 SUPABASE_URL = "https://iwijeijjpnojtolvcxtp.supabase.co"
 
 # 逻辑：用于接收异步计费回调的 Webhook 地址
-VERCEL_WEBHOOK_URL = "https://uniskill.ai/api/webhook/sync-credits"
+VERCEL_WEBHOOK_URL = "https://www.uniskill.ai/api/webhook/sync-credits"
 
 # 逻辑：Web 服务主域名，用于动态拉取配置
 WEB_DOMAIN = "https://uniskill.ai"
