@@ -6,44 +6,40 @@
 
 ---
 
-## The Vision: UniSkill 2.0
+## Architecture Overview
 
-Building AI agents requires a bridge between LLM reasoning and deterministic execution. **UniSkill Gateway** collapses the complexity of managing API keys, billing, rate-limiting, and data formatting into a single, unified protocol.
+UniSkill Gateway acts as the bridge between LLM reasoning and deterministic execution. It collapses the complexity of managing API keys, billing, rate-limiting, and data formatting into a single, high-performance edge service.
 
-With **UniSkill 2.0**, your gateway is no longer just a proxy — it's a **Registry-Driven Engine**.
+At its core, UniSkill is a **Registry-Driven Engine**.
 
----
+### Key Capabilities
 
-## What makes UniSkill 2.0 unique?
-
-UniSkill is a **managed tool execution gateway** built on Cloudflare's global edge network.
-
-- 🧩 **Unified Protocol** — Every skill follows the same pattern: `skill_name`, `display_name`, `cost_per_call`.
-- 📚 **Registry-Driven** — Skills are defined as Markdown files in the [UniSkill Registry](https://github.com/uniskillai/uniskill-web/tree/main/registry/skills). Upload a file, and the gateway automatically knows how to execute and bill for it.
-- ⚡ **Edge-Optimized** — Built on Cloudflare Workers with multi-layered caching (In-Memory + KV) for sub-millisecond overhead.
-- 💰 **Prepaid Credit System** — Real-time deduction from a stable user identity, synchronized with Supabase for historical auditing.
-- 🧼 **Plugin Formatters** — Built-in `plugin_hook` support to clean and compress upstream API results for LLM context tokens.
+- 🧩 **Unified Protocol** — Every skill follows a standardized pattern: `skill_name`, `display_name`, `cost_per_call`.
+- 📚 **Registry-Driven** — Skills are managed as Markdown definitions in the central registry. The gateway automatically resolves execution logic and billing rates from these definitions.
+- ⚡ **Edge-Optimized** — Built on Cloudflare Workers with multi-layered caching (In-Memory + KV) to ensure sub-millisecond execution overhead.
+- 💰 **Built-in Billing** — Real-time credit deduction and user identity management, with asynchronous synchronization to persistent databases.
+- 🧼 **Plugin Formatters** — Native support for `plugin_hook` logic to clean, compress, and format upstream API results for LLM context optimization.
 
 ---
 
-## Implementation Protocol
+## Unified Execution Protocol
 
-UniSkill 2.0 standardizes how tools are defined and invoked:
+UniSkill standardizes how tools are defined and invoked across the entire ecosystem:
 
 | Field | Description |
 |-------|-------------|
 | `skill_name` | The semantic unique identifier (e.g., `uniskill_weather`). |
-| `display_name` | Human-readable name for UI/UX (e.g., `Global Weather`). |
+| `display_name` | Human-readable name for UI display (e.g., `Global Weather`). |
 | `cost_per_call` | Credits deducted per successful execution. |
-| `tags` | Array of labels for categorization and discovery. |
+| `tags` | Labels for skill categorization and discovery. |
 
 ---
 
-## Quickstart
+## Usage
 
-### 1. Unified Execution Call
+### 1. Execute a Skill
 
-Forget per-endpoint management. Use the unified execution route:
+Instead of managing multiple endpoints, every tool is accessible via the unified execution route:
 
 ```bash
 curl -X POST https://your-gateway.workers.dev/v1/execute \
@@ -51,14 +47,14 @@ curl -X POST https://your-gateway.workers.dev/v1/execute \
   -d '{
     "skill_name": "uniskill_search",
     "params": {
-      "query": "UniSkill 2.0 architecture"
+      "query": "UniSkill architecture benefits"
     }
   }'
 ```
 
 ### 2. Standardized Response
 
-Every response is wrapped with UniSkill usage metadata:
+Every execution returns a consistent structure, including usage and billing metadata:
 
 ```json
 {
@@ -75,18 +71,18 @@ Every response is wrapped with UniSkill usage metadata:
 
 ---
 
-## Core Features
+## Core Systems
 
-### 🛡️ Graceful Error Attribution
-Raw upstream errors (429s, 404s, 500s) are intercepted and translated into professional, actionable feedback. Credits are only deducted for successful executions.
+### 🛡️ Error Attribution
+Upstream failures (429s, 404s, 500s) are intercepted and translated into professional, actionable feedback. **Credits are only deducted for successful executions.**
 
 ### 💨 Layered Caching
-- **Level 1 (In-Memory)**: 60s TTL for hot user session data (UID/Credits).
-- **Level 2 (KV Store)**: Global persistence for skill configurations and user state.
-- **Level 3 (Registry API)**: Automatic fallback for new skill registration.
+- **Memory Cache**: 60s TTL for active user session data to minimize latency.
+- **KV Store**: Global persistence for skill configurations and user states.
+- **Registry Sync**: Automatic fallback and write-back for skill registration.
 
-### 🔐 Multi-Credential Pooling
-Enterprise keys (Tavily, Jina, Mapbox, etc.) are managed securely in Cloudflare Secrets, protected from LLM prompt injection or client-side leakage.
+### 🔐 Credential Management
+Enterprise API keys and secrets are managed securely within the gateway environment, preventing client-side exposure and protecting against prompt injection.
 
 ---
 
@@ -96,7 +92,7 @@ Enterprise keys (Tavily, Jina, Mapbox, etc.) are managed securely in Cloudflare 
 uniskill-gateway/
 ├── src/
 │   ├── engine/
-│   │   ├── executor.ts    # Generic Proxy/Official executor
+│   │   ├── executor.ts    # Generic Proxy & Official executor
 │   │   └── parser.ts      # Registry YAML parser
 │   ├── routes/
 │   │   ├── execute-skill.ts # Unified Entry Point (The Brain)
@@ -104,18 +100,18 @@ uniskill-gateway/
 │   ├── utils/
 │   │   ├── billing.ts     # In-memory + KV credit management
 │   │   ├── stats.ts       # Supabase RPC logging with denormalization
-│   │   └── response.ts    # Standardized JSON helpers
+│   │   └── response.ts    # Standardized response helpers
 └── wrangler.toml          # Environment & Bindings
 ```
 
 ---
 
-## How to Add a New Skill
+## Extending the Gateway
 
-Unlike traditional gateways, you don't always need to write code.
+Adding a new tool is straightforward:
 
-1. **Registry Method (Recommended)**: Create a `.md` file in the Registry. Define the `endpoint`, `method`, and `payload` mapping. Run the sync script. The gateway will instantly support it via `/v1/execute`.
-2. **Native Method**: For complex logic (like `uniskill_math`), create a new route file and register it in `HARDCODED_NATIVE_SKILLS` within `execute-skill.ts`.
+1. **Registry Integration**: Add a `.md` definition to the Registry. The gateway will instantly detect and support it via `/v1/execute`.
+2. **Native Implementation**: For logic-heavy tools, implement a dedicated route and register it in `HARDCODED_NATIVE_SKILLS`.
 
 ---
 
@@ -127,31 +123,26 @@ Unlike traditional gateways, you don't always need to write code.
 
 ---
 
-## Self-Hosting
+## Self-Hosting & Deployment
 
 ### Prerequisites
 - Node.js ≥ 18
-- A [Cloudflare account](https://dash.cloudflare.com)
-- A [Supabase project](https://supabase.com) (for logs and user tiering)
+- [Cloudflare Workers](https://dash.cloudflare.com) account
+- [Supabase](https://supabase.com) project for persistent logging
 
-### Deploy in 4 Steps
+### Deployment
 
 ```bash
-# 1. Create KV namespaces
+# 1. Initialize KV
 npx wrangler kv:namespace create UNISKILL_KV
-# → Paste the returned ID into wrangler.toml
 
-# 2. Set your Secrets
+# 2. Configure Secrets
 npx wrangler secret put TAVILY_API_KEY
 npx wrangler secret put SUPABASE_URL
 npx wrangler secret put SUPABASE_ANON_KEY
 
-# 3. Deploy
+# 3. Deploy to Edge
 npm run deploy
-
-# 4. Sync Registry (From uniskill-web)
-# This populates your KV and DB with all official skills
-npm run sync-registry
 ```
 
 ### Local Development
