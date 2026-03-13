@@ -88,13 +88,31 @@ export async function executeSkill(impl: any, params: any, env: Env) {
 
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`Upstream API returned ${response.status}: ${errorText}`);
+            let errorMessage = `Upstream API returned ${response.status}`;
+            
+            // Logic: Distinguish between different error types for better UX
+            if (response.status === 429) {
+                errorMessage = "Upstream provider rate limit exceeded. Please try again later.";
+            } else if (response.status === 404) {
+                errorMessage = "The requested resource could not be found on the upstream provider.";
+            } else if (response.status >= 500) {
+                errorMessage = "The upstream provider is currently experiencing issues.";
+            } else {
+                try {
+                    const parsedError = JSON.parse(errorText);
+                    errorMessage = parsedError.message || parsedError.error || errorMessage;
+                } catch (e) {
+                    errorMessage = errorText || errorMessage;
+                }
+            }
+
+            throw new Error(errorMessage);
         }
 
         return await response.json();
 
     } catch (error: any) {
-        console.error(`[Executor] Network Error:`, error);
+        console.error(`[Executor] Error: ${error.message}`);
         throw error;
     }
 }

@@ -143,13 +143,22 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             }
         }
 
-        // 3c. Final Pricing Logic & Fallbacks
+        // 3c. Final Pricing & Metadata Logic
+        let resolvedDisplayName = systemDefaults?.display_name;
+        let resolvedTags = systemDefaults?.tags;
+
         if (implementation) {
+            // Update pricing from implementation
             if (implementation.meta?.cost !== undefined) {
                 skillCost = Number(implementation.meta.cost);
             } else if (implementation.cost_per_call !== undefined) {
                 skillCost = Number(implementation.cost_per_call);
             }
+
+            // Update metadata for consistency (Shadow Consistency)
+            // Logic: prefer .md file metadata over hardcoded defaults
+            if (implementation.display_name) resolvedDisplayName = implementation.display_name;
+            if (implementation.tags) resolvedTags = implementation.tags;
         } else if (systemDefaults) {
             // Seed pricing for native skills if metadata is missing from DB/KV
             skillCost = systemDefaults.cost_per_call;
@@ -217,12 +226,22 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             finalData = await nativeResponse.json();
         } else {
             // Logic: Generic executor for non-native skills
-            finalData = await executeSkill(implementation, params, env);
+            try {
+                finalData = await executeSkill(implementation, params, env);
+            } catch (execErr: any) {
+                return errorResponse(execErr.message, 502); // Bad Gateway for upstream errors
+            }
 
             // 🔴 核心逻辑：检查该技能是否配置了 plugin_hook，执行清洗器
             const hookName = implementation.plugin_hook;
             if (hookName && (formatters as any)[hookName]) {
-                finalData = (formatters as any)[hookName](finalData);
+                const formatted = (formatters as any)[hookName](finalData);
+                // Logic: Formatters return strings, but we need an object for successResponse
+                try {
+                    finalData = typeof formatted === 'string' ? JSON.parse(formatted) : formatted;
+                } catch (pErr) {
+                    finalData = { result: formatted }; // Fallback if not JSON
+                }
             }
         }
 
@@ -253,8 +272,8 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             "credits", 
             "success",
             skillCost,
-            systemDefaults?.display_name,
-            systemDefaults?.tags
+            resolvedDisplayName,
+            resolvedTags
         ));
 
         return successResponse({

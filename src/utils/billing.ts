@@ -8,13 +8,37 @@ import { SkillKeys } from "./skill-keys";
 import { fetchUserDataFromDB } from "../db";
 
 /**
+ * In-Memory cache for reducing KV read latency.
+ * TTL is kept short (60s) for consistency.
+ */
+const MEM_CACHE: Record<string, { val: any, expiry: number }> = {};
+const CACHE_TTL = 60000; // 60 seconds
+
+function setCache(key: string, val: any) {
+    MEM_CACHE[key] = { val, expiry: Date.now() + CACHE_TTL };
+}
+
+function getCache(key: string) {
+    const item = MEM_CACHE[key];
+    if (item && item.expiry > Date.now()) return item.val;
+    return null;
+}
+
+/**
  * Reads the current credit balance for a key hash from KV.
  */
 export async function getCredits(kv: KVNamespace, keyHash: string): Promise<number> {
+    const cacheKey = `credits:${keyHash}`;
+    const cached = getCache(cacheKey);
+    if (cached !== null) return cached;
+
     const raw = await kv.get(SkillKeys.credits(keyHash));
     if (raw === null) return -1;
     const credits = parseFloat(raw);
-    return isNaN(credits) ? 0 : credits;
+    const finalCredits = isNaN(credits) ? 0 : credits;
+    
+    setCache(cacheKey, finalCredits);
+    return finalCredits;
 }
 
 /**
@@ -22,9 +46,16 @@ export async function getCredits(kv: KVNamespace, keyHash: string): Promise<numb
  * Logic: KV first, then DB fallback + Write-back.
  */
 export async function getUserUid(kv: KVNamespace, keyHash: string, env: any): Promise<string> {
+    const cacheKey = `uid:${keyHash}`;
+    const cached = getCache(cacheKey);
+    if (cached) return cached;
+
     // 1. Try KV
     let uid = await kv.get(SkillKeys.userUid(keyHash));
-    if (uid) return uid;
+    if (uid) {
+        setCache(cacheKey, uid);
+        return uid;
+    }
 
     // 2. Fallback to Supabase
     console.log(`[Identity] KV miss for UID (hash: ...${keyHash.slice(-6)}), hitting DB.`);
@@ -34,6 +65,7 @@ export async function getUserUid(kv: KVNamespace, keyHash: string, env: any): Pr
     // 3. Write-back to KV for future requests
     if (uid && uid !== "anonymous") {
         await kv.put(SkillKeys.userUid(keyHash), uid, { expirationTtl: 86400 * 7 }); // Cache for 7 days
+        setCache(cacheKey, uid);
     }
 
     return uid;
@@ -97,6 +129,9 @@ export async function deductCredit(
 
     // Step 1: 写回 KV（使用标准 Key）
     await kv.put(SkillKeys.credits(keyHash), String(newBalance));
+    
+    // Refresh In-Memory Cache immediately
+    setCache(`credits:${keyHash}`, newBalance);
 
     // Step 2: 异步回写 Supabase
     if (webhookUrl && adminKey) {
