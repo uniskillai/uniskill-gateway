@@ -30,6 +30,12 @@ export const SkillKeys = {
     tier: (keyHash: string) => `tier:${keyHash}`,
 
     /**
+     * Logic: Stable user UID indexed by key_hash
+     * 逻辑：稳定的用户 UID，以 key_hash 索引
+     */
+    userUid: (keyHash: string) => `user:uid:${keyHash}`,
+
+    /**
      * Logic: Helper to identify the storage type from a raw KV key
      * 逻辑：辅助函数，从原始 KV Key 中识别存储类型
      */

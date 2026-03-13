@@ -10,6 +10,7 @@
 export interface Env {
     TAVILY_API_KEY: string;
     JINA_API_KEY: string;
+    MAPBOX_API_KEY: string;
     // ... 其他系统级环境变量
 }
 

@@ -5,15 +5,38 @@
 
 import { SkillKeys } from "./skill-keys";
 
+import { fetchUserDataFromDB } from "../db";
+
 /**
  * Reads the current credit balance for a key hash from KV.
- * KV schema: user:credits:{hash}
  */
 export async function getCredits(kv: KVNamespace, keyHash: string): Promise<number> {
     const raw = await kv.get(SkillKeys.credits(keyHash));
     if (raw === null) return -1;
     const credits = parseFloat(raw);
     return isNaN(credits) ? 0 : credits;
+}
+
+/**
+ * Retrieves the stable User UID for a key hash.
+ * Logic: KV first, then DB fallback + Write-back.
+ */
+export async function getUserUid(kv: KVNamespace, keyHash: string, env: any): Promise<string> {
+    // 1. Try KV
+    let uid = await kv.get(SkillKeys.userUid(keyHash));
+    if (uid) return uid;
+
+    // 2. Fallback to Supabase
+    console.log(`[Identity] KV miss for UID (hash: ...${keyHash.slice(-6)}), hitting DB.`);
+    const userData = await fetchUserDataFromDB(keyHash, env);
+    uid = userData.user_uid;
+
+    // 3. Write-back to KV for future requests
+    if (uid && uid !== "anonymous") {
+        await kv.put(SkillKeys.userUid(keyHash), uid, { expirationTtl: 86400 * 7 }); // Cache for 7 days
+    }
+
+    return uid;
 }
 
 /**

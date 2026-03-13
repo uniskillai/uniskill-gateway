@@ -14,22 +14,23 @@ const getSupabaseClient = (env: any) => {
 export const fetchUserDataFromDB = async (
     keyHash: string,
     env: any
-): Promise<{ tier: string; credits: number }> => {
+): Promise<{ user_uid: string, tier: string; credits: number }> => {
     const supabase = getSupabaseClient(env);
 
-    // 查询 profiles 表，使用已哈希的 key (key_hash) 匹配
+    // 查询 profiles 表
     const { data, error } = await supabase
         .from("profiles")
-        .select("tier, credits")
+        .select("user_uid, tier, credits") 
         .eq("key_hash", keyHash)
         .single();
 
     if (error) {
         console.error("[DB Fallback] Supabase query error:", error.message);
-        return { tier: "FREE", credits: 0 };
+        return { user_uid: "anonymous", tier: "FREE", credits: 0 };
     }
 
     return {
+        user_uid: data?.user_uid || "anonymous",
         tier: data?.tier?.toUpperCase() || "FREE",
         credits: typeof data?.credits === "number" ? data.credits : 0,
     };

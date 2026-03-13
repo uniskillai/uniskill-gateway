@@ -11,7 +11,8 @@ export async function handleCrypto(request: Request, _env: Env): Promise<Respons
 
     try {
         const body: any = await request.json();
-        const { operation, data } = body;
+        const operation = body.operation || body.action;
+        const data = body.data;
 
         if (!operation) {
             return new Response(JSON.stringify({ error: "Missing required parameter: operation" }), {
@@ -21,9 +22,11 @@ export async function handleCrypto(request: Request, _env: Env): Promise<Respons
         }
 
         let result: string | null = null;
+        const normalizedOp = operation.toLowerCase();
 
-        switch (operation) {
+        switch (normalizedOp) {
             case "uuid_v4":
+            case "uuid":
                 result = crypto.randomUUID();
                 break;
             case "base64_encode":

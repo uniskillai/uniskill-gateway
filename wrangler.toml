@@ -43,3 +43,9 @@ VERCEL_WEBHOOK_URL = "https://www.uniskill.ai/api/webhook/sync-credits"
 
 # 逻辑：Web 服务主域名，用于动态拉取配置
 WEB_DOMAIN = "https://uniskill.ai"
+
+# 逻辑：用于生成静态预览图的 Mapbox 密钥 (非必填，填入可启用地图)
+MAPBOX_API_KEY = "your_mapbox_api_key_here"
+
+[dev]
+port = 8787

@@ -16,6 +16,7 @@ export interface Env {
   UNISKILL_KV: KVNamespace;
   TAVILY_API_KEY: string;
   JINA_API_KEY: string;
+  MAPBOX_API_KEY: string;
   ADMIN_KEY: string;
   VERCEL_WEBHOOK_URL: string;
   SUPABASE_URL: string;
