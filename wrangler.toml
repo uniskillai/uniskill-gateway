@@ -53,7 +53,7 @@ port = 8787
 # ── Staging Environment ─────────────────────────────────────
 [env.staging]
 name = "uniskill-gateway-staging"
-vars = { ENVIRONMENT = "staging", ENABLE_M2M_PAYMENTS = "true", TEST_WALLET_ADDRESS = "0xfA90a817E010BD2665C04A6D1d2Ba3fAcd3983D5" }
+vars = { ENVIRONMENT = "staging", ENABLE_M2M_PAYMENTS = "true", TEST_WALLET_ADDRESS = "0xfA90a817E010BD2665C04A6D1d2Ba3fAcd3983D5", SUPABASE_URL = "https://iwijeijjpnojtolvcxtp.supabase.co", VERCEL_WEBHOOK_URL = "https://www.uniskill.ai/api/webhook/sync-credits", WEB_DOMAIN = "https://uniskill.ai" }
 [[env.staging.kv_namespaces]]
 binding = "UNISKILL_KV"
 id = "9f388e510ffc426c8320f839ae769fe3"
