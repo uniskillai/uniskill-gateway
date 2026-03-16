@@ -147,14 +147,21 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
                                     if (skillStr) {
                                         try {
                                             const skill = JSON.parse(skillStr);
-                                            // 智能提取技能名称，移除前缀 (Extract clean skill ID)
-                                            const skillName = skill.id || allKeys[i].name.replace(/^skill:(official|market):/, "");
+                                            
+                                            // 1. 终极兼容：优先读取 skill_name，兼容 id, name，甚至去 meta 里找
+                                            // (Ultimate compatibility: check skill_name, id, name, and meta object)
+                                            const rawName = skill.skill_name || skill.id || skill.name || skill.meta?.skill_name || allKeys[i].name.replace(/^skill:(official|market):/, "");
 
-                                            // 核心防雷：强制组装成严格符合 MCP 规范的 Schema
-                                            // (Core safeguard: Force strictly compliant MCP Schema to prevent Agent parsing errors)
+                                            // 2. 核心防雷：强制 MCP 命名规范消毒 (仅允许字母、数字、下划线、横杠)
+                                            // (Core Safeguard: Force MCP Regex Compliance)
+                                            let safeName = rawName.replace(/[^a-zA-Z0-9_-]/g, "_").substring(0, 64);
+                                            
+                                            if (!safeName) safeName = `uniskill_tool_${i}`;
+
+                                            // 强制组装
                                             dynamicTools.push({
-                                                name: skillName,
-                                                description: skill.meta?.description || `UniSkill Tool: ${skillName}`,
+                                                name: safeName, 
+                                                description: skill.meta?.description || skill.display_name || `UniSkill Tool: ${safeName}`,
                                                 inputSchema: {
                                                     type: "object",
                                                     properties: skill.meta?.parameters?.properties || {},
