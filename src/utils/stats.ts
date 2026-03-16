@@ -16,10 +16,10 @@ export async function recordSkillCall(
     userUid: string,
     skillName: string, 
     requestId: string,
-    cost: number = 0, 
+    credits: number = 0, 
     paymentType: 'credits' | 'usdc' = 'credits', 
     status: string = 'success',
-    cost_per_call?: number,
+    creditsPerCall?: number,
     display_name?: string, // Added for initial sync
     tags?: string[]       // Added for initial sync
 ): Promise<void> {
@@ -31,9 +31,9 @@ export async function recordSkillCall(
             p_skill_name: skillName,
             p_payment_type: paymentType,
             p_request_id: requestId,
-            p_cost: cost,
+            p_cost: credits,
             p_status: status,
-            p_cost_per_call: cost_per_call,
+            p_cost_per_call: creditsPerCall,
             p_display_name: display_name,
             p_tags: tags
         });
@@ -41,7 +41,7 @@ export async function recordSkillCall(
         if (error) {
             console.error(`[Stats] RPC error [${paymentType}] for [${skillName}] user [${userUid.slice(-6)}]:`, error.message);
         } else {
-            console.log(`[Stats] Recorded: [${paymentType}] skill=${skillName} cost=${cost} user=...${userUid.slice(-6)}`);
+            console.log(`[Stats] Recorded: [${paymentType}] skill=${skillName} credits=${credits} user=...${userUid.slice(-6)}`);
         }
     } catch (err) {
         console.error(`[Stats] Unexpected error recording call for ${skillName}:`, err);

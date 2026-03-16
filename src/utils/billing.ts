@@ -121,7 +121,7 @@ async function syncToSupabase(
     keyHash: string,
     newBalance: number,
     skillName: string,
-    cost: number
+    credits: number
 ): Promise<void> {
     try {
         const res = await fetch(webhookUrl, {
@@ -130,7 +130,7 @@ async function syncToSupabase(
                 "Content-Type": "application/json",
                 "Authorization": `Bearer ${adminKey}`,
             },
-            body: JSON.stringify({ hash: keyHash, newBalance, skillName, amount: -cost }),
+            body: JSON.stringify({ hash: keyHash, newBalance, skillName, amount: -credits }),
         });
         if (!res.ok) {
             console.error(`[Sync] Webhook returned ${res.status}: ${await res.text()}`);
@@ -147,13 +147,13 @@ export async function deductCredit(
     kv: KVNamespace,
     uid: string,
     currentCredits: number,
-    cost = 1,
+    creditsPerCall = 1,
     webhookUrl?: string,
     adminKey?: string,
     skillName = "unknown",
     keyHash?: string // Required for DB sync if webhook relies on it
 ): Promise<void> {
-    const newBalance = Math.round((currentCredits - cost) * 100) / 100;
+    const newBalance = Math.round((currentCredits - creditsPerCall) * 100) / 100;
 
     // Step 1: 写回 KV（使用稳定 UID Key）
     await kv.put(SkillKeys.credits(uid), String(newBalance));
@@ -163,6 +163,6 @@ export async function deductCredit(
 
     // Step 2: 异步回写 Supabase (使用 Hash 以匹配现有 Web 端逻辑)
     if (webhookUrl && adminKey && keyHash) {
-        await syncToSupabase(webhookUrl, adminKey, keyHash, newBalance, skillName, cost);
+        await syncToSupabase(webhookUrl, adminKey, keyHash, newBalance, skillName, creditsPerCall);
     }
 }

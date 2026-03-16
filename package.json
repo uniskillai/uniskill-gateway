@@ -7,7 +7,8 @@
     "dev": "wrangler dev --remote",
     "deploy": "wrangler deploy",
     "type-check": "tsc --noEmit",
-    "sync-docs": "tsx scripts/sync-docs.ts"
+    "sync-docs": "tsx scripts/sync-docs.ts",
+    "test:github": "tsx scripts/test-github-tracker.ts"
   },
   "keywords": [],
   "author": "",

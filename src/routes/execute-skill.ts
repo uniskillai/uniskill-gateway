@@ -12,19 +12,6 @@ import { checkRateLimit } from "../rateLimit";
 import type { Env } from "../index";
 import { recordSkillCall } from "../utils/stats";
 
-const SYSTEM_SKILL_DEFAULTS: Record<string, { display_name: string, cost_per_call: number, tags: string[] }> = {
-    "uniskill_weather": { display_name: "Global Weather", cost_per_call: 0, tags: ["weather", "wttr", "forecast"] },
-    "uniskill_scrape": { display_name: "Web Scraper", cost_per_call: 10, tags: ["scrape", "extraction", "data"] },
-    "uniskill_math": { display_name: "Math Engine", cost_per_call: 0.1, tags: ["math", "calculation", "native", "no-hallucination"] },
-    "uniskill_time": { display_name: "Time & Timezone Engine", cost_per_call: 0, tags: ["time", "timezone", "native", "no-hallucination"] },
-    "uniskill_crypto_util": { display_name: "Crypto & Encoding", cost_per_call: 0.1, tags: ["crypto", "hash", "base64", "uuid", "native"] },
-    "uniskill_geo": { display_name: "Location & Map Engine", cost_per_call: 0.5, tags: ["geo", "map", "location", "timezone", "geocoding"] },
-    "uniskill_news": { display_name: "Global News", cost_per_call: 5.0, tags: ["news", "summary", "headlines"] },
-    "uniskill_search": { display_name: "Web Search", cost_per_call: 5.0, tags: ["search", "real-time", "tavily"] },
-    "uniskill_wiki": { display_name: "Wikipedia Engine", cost_per_call: 1.0, tags: ["wikipedia", "encyclopedia", "knowledge"] },
-    "uniskill_scholar": { display_name: "Semantic Scholar", cost_per_call: 1.0, tags: ["paper", "academic", "research", "semantic-scholar"] },
-};
-
 // Logic: Hardcoded native handlers that don't use the generic executor
 const HARDCODED_NATIVE_SKILLS = new Set([
     "uniskill_weather",
@@ -32,24 +19,9 @@ const HARDCODED_NATIVE_SKILLS = new Set([
     "uniskill_math",
     "uniskill_time",
     "uniskill_crypto_util",
-    "uniskill_geo"
+    "uniskill_geo",
+    "uniskill_github_tracker"
 ]);
-
-async function fetchSkillConfig(skillId: string, env: Env) {
-    const response = await fetch(`${env.WEB_DOMAIN}/api/internal/skill-config?id=${skillId}`, {
-        method: "GET",
-        headers: {
-            "x-internal-secret": env.INTERNAL_API_SECRET
-        }
-    });
-
-    if (!response.ok) {
-        throw new Error(`Failed to fetch config for skill: ${skillId}`);
-    }
-
-    const data = await response.json() as any;
-    return data; // Return full unified skill object
-}
 
 export async function handleExecuteSkill(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -91,86 +63,36 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     }
 
     const normalizedSkillName = skillName.startsWith("uniskill_") ? skillName : `uniskill_${skillName}`;
-    const systemDefaults = SYSTEM_SKILL_DEFAULTS[normalizedSkillName];
     const isHardcodedNative = HARDCODED_NATIVE_SKILLS.has(normalizedSkillName);
 
     const params = body.params || body;
 
     try {
-        let implementation: any = null;
-        let skillCost = 1; // Default fallback
-
-        // ── Step 3: Skill Configuration & Cost Lookup ──
-        // Logic: Always attempt to fetch config from KV/Registry first to get the latest costPerCall.
-        
-        // 3a. KV Read (Primary)
+        // ── Step 3: Skill Configuration Lookup (Mandatory KV Lookup) ──
+        // Logic: All skills must be registered in KV (synced from Registry).
         let skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(normalizedSkillName));
         
-        if (skillRaw) {
-            // KV Hit: Parse the cached skill data
-            const spec = SkillParser.parse(skillRaw);
-            implementation = spec.implementation || (spec as any).config;
-
-            try {
-                if (skillRaw.trim().startsWith('{')) {
-                    const unified = JSON.parse(skillRaw);
-                    if (unified.meta && unified.meta.cost !== undefined) {
-                        skillCost = Number(unified.meta.cost);
-                    } else if (unified.cost_per_call !== undefined) {
-                        skillCost = Number(unified.cost_per_call);
-                    }
-                }
-            } catch (jsonErr) { }
-        } else if (!isHardcodedNative) {
-            // 3b. Registry API Fallback (Only for non-native skills if KV missed)
-            console.log(`[DEBUG] KV miss for skill [${normalizedSkillName}], falling back to Registry API.`);
-            try {
-                const data = await fetchSkillConfig(normalizedSkillName, env);
-                implementation = data.config || data.implementation;
-
-                if (data.meta && data.meta.cost !== undefined) {
-                    skillCost = Number(data.meta.cost);
-                }
-                
-                // Write-back to KV
-                if (implementation) {
-                    ctx.waitUntil(
-                        env.UNISKILL_KV.put(SkillKeys.official(normalizedSkillName), JSON.stringify(data), { expirationTtl: 3600 })
-                    );
-                }
-            } catch (e) {
-                console.warn(`[DEBUG] Registry API fetch failed for [${normalizedSkillName}]:`, e);
-            }
+        if (!skillRaw) {
+            return errorResponse(`Skill [${normalizedSkillName}] is not registered in the system registry.`, 400);
         }
 
-        // 3c. Final Pricing & Metadata Logic
-        let resolvedDisplayName = systemDefaults?.display_name;
-        let resolvedTags = systemDefaults?.tags;
-
-        if (implementation) {
-            // Update pricing from implementation
-            if (implementation.meta?.cost !== undefined) {
-                skillCost = Number(implementation.meta.cost);
-            } else if (implementation.cost_per_call !== undefined) {
-                skillCost = Number(implementation.cost_per_call);
-            }
-
-            // Update metadata for consistency (Shadow Consistency)
-            // Logic: prefer .md file metadata over hardcoded defaults
-            if (implementation.display_name) resolvedDisplayName = implementation.display_name;
-            if (implementation.tags) resolvedTags = implementation.tags;
-        } else if (systemDefaults) {
-            // Seed pricing for native skills if metadata is missing from DB/KV
-            skillCost = systemDefaults.cost_per_call;
-        }
+        // 3b. Parse the dynamic configuration
+        const spec = SkillParser.parse(skillRaw);
+        const unified = JSON.parse(skillRaw);
+        
+        const implementation = spec.implementation || (spec as any).config || unified.config;
+        const creditsPerCall = Number(unified.credits_per_call ?? unified.meta?.cost ?? unified.cost_per_call ?? 1);
+        const displayName = unified.display_name || unified.meta?.display_name || normalizedSkillName;
+        const tags = unified.tags || unified.meta?.tags || [];
 
         if (!implementation && !isHardcodedNative) {
-            return errorResponse(`Skill [${normalizedSkillName}] Not Found`, 404);
+            return errorResponse(`Implementation config missing for skill [${normalizedSkillName}]`, 500);
         }
 
         // ── Step 4: Rate Limit Check ──
         const userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
         const userTier = await getTier(env.UNISKILL_KV, userUid, env);
+        
         const rlResult = await checkRateLimit(keyHash, userTier, env);
 
         if (!rlResult.isAllowed) {
@@ -179,17 +101,17 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
 
         // ── Step 5: Identity & Billing Check ──
         let currentCredits = await getCredits(env.UNISKILL_KV, userUid, env, keyHash);
+        
         if (currentCredits === -1) currentCredits = 0;
 
-        if (currentCredits < skillCost) {
-            return errorResponse(`Insufficient Credits. This skill costs ${skillCost}, but you have ${currentCredits}.`, 402);
+        if (currentCredits < creditsPerCall) {
+            return errorResponse(`Insufficient Credits. This skill costs ${creditsPerCall}, but you have ${currentCredits}.`, 402);
         }
 
         // ── Step 6: Execution (Native Handler or Generic Executor) ──
         let finalData: any;
 
         if (isHardcodedNative) {
-            // Logic: Route to the dedicated native handler (bypasses MD endpoint lookup)
             const syntheticRequest = new Request(request.url, {
                 method: "POST",
                 headers: request.headers,
@@ -215,43 +137,52 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             } else if (normalizedSkillName === "uniskill_geo") {
                 const { handleGeo } = await import("./geo");
                 nativeResponse = await handleGeo(syntheticRequest, env);
+            } else if (normalizedSkillName === "uniskill_github_tracker") {
+                const { handleGithubTracker } = await import("./github-tracker");
+                nativeResponse = await handleGithubTracker(syntheticRequest, env);
             } else {
                 return errorResponse(`Native handler not found for: ${normalizedSkillName}`, 500);
             }
 
             if (!nativeResponse.ok) {
-                return nativeResponse; // Pass through native errors
+                return nativeResponse;
             }
 
             finalData = await nativeResponse.json();
+
+            // 🔴 Apply dynamic plugin hook if configured
+            const hookName = implementation?.plugin_hook || unified.plugin_hook;
+            if (hookName && (formatters as any)[hookName]) {
+                const formatted = (formatters as any)[hookName](finalData);
+                try {
+                    finalData = typeof formatted === 'string' ? JSON.parse(formatted) : formatted;
+                } catch { finalData = { result: formatted }; }
+            }
         } else {
-            // Logic: Generic executor for non-native skills
             try {
                 finalData = await executeSkill(implementation, params, env);
             } catch (execErr: any) {
-                return errorResponse(execErr.message, 502); // Bad Gateway for upstream errors
+                return errorResponse(execErr.message, 502);
             }
 
-            // 🔴 核心逻辑：检查该技能是否配置了 plugin_hook，执行清洗器
-            const hookName = implementation.plugin_hook;
+            const hookName = implementation.plugin_hook || unified.plugin_hook;
             if (hookName && (formatters as any)[hookName]) {
                 const formatted = (formatters as any)[hookName](finalData);
-                // Logic: Formatters return strings, but we need an object for successResponse
                 try {
                     finalData = typeof formatted === 'string' ? JSON.parse(formatted) : formatted;
                 } catch (pErr) {
-                    finalData = { result: formatted }; // Fallback if not JSON
+                    finalData = { result: formatted };
                 }
             }
         }
 
         // ── Step 7: Post-Execution Billing ──
-        if (skillCost > 0) {
+        if (creditsPerCall > 0) {
             ctx.waitUntil(deductCredit(
                 env.UNISKILL_KV,
                 userUid,
                 currentCredits,
-                skillCost,
+                creditsPerCall,
                 env.VERCEL_WEBHOOK_URL,
                 env.ADMIN_KEY,
                 normalizedSkillName,
@@ -259,31 +190,31 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             ));
         }
 
-        // ── Step 8: Final Response with Metadata ──
-        const remaining = Math.round((currentCredits - skillCost) * 100) / 100;
+        // ── Step 8: Final Response ──
+        const remaining = Math.round((currentCredits - creditsPerCall) * 100) / 100;
         const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
 
-        // ── Step 9: Record Statistics (Async) ──
+        // ── Step 9: Record Statistics (Dynamic Metadata) ──
         ctx.waitUntil(recordSkillCall(
             env, 
             userUid, 
             normalizedSkillName, 
             requestId, 
-            skillCost, 
+            creditsPerCall, 
             "credits", 
             "success",
-            skillCost,
-            resolvedDisplayName,
-            resolvedTags
+            creditsPerCall,
+            displayName,
+            tags
         ));
 
         return successResponse({
             ...finalData,
             _uniskill: {
-                cost: skillCost,
+                credits_charged: creditsPerCall,
                 remaining,
                 request_id: requestId,
-                version: "v1.0.0" 
+                version: "v1.1.0" 
             }
         }, 200);
 

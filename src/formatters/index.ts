@@ -5,6 +5,7 @@ import { formatWeather } from "./weather";
 import { formatNews } from "./news";
 import { formatSearch } from "./search";
 import { formatScrape } from "./scrape";
+import { formatGithubTracker } from "./github-tracker";
 
 // 定义统一的清洗器函数签名
 /**
@@ -18,6 +19,7 @@ export const formatters: Record<string, FormatterFn> = {
     "NEWS_AGGREGATOR_FORMATTER": formatNews,
     "UNISKILL_SEARCH_FORMATTER": formatSearch,
     "JINA_READER_FORMATTER": formatScrape,
+    "github_tracker_formatter": formatGithubTracker,
 };
 
 /**

@@ -23,6 +23,8 @@ export interface Env {
   SUPABASE_ANON_KEY: string;
   WEB_DOMAIN: string;
   INTERNAL_API_SECRET: string;
+  TEST_WALLET_ADDRESS?: string;
+  GITHUB_TOKEN?: string;
 }
 
 export default {
