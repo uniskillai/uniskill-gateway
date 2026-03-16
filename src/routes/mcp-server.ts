@@ -9,29 +9,86 @@ import { handleExecuteSkill } from "./execute-skill";
  * 逻辑：网关级数据防腐层 - 强制将任何奇葩数据转化为 MCP 兼容的纯文本
  */
 function formatToolResponse(rawData: any): string {
-    // 1. 判空防雷
     if (rawData === null || rawData === undefined) {
         return "Execution successful, but no content was returned by the upstream API.";
     }
-
-    // 2. 如果已经是字符串，直接放行
     if (typeof rawData === "string") {
         return rawData;
     }
-
-    // 3. 如果是标准 JSON 对象或数组，极其优雅地序列化
     if (typeof rawData === "object") {
         try {
-            // 限制深度或直接美化输出
             return JSON.stringify(rawData, null, 2);
         } catch (e) {
             return `[Warning: Unserializable Object] ${String(rawData)}`;
         }
     }
-
-    // 4. 其他类型（数字、布尔值等）强转字符串
     return String(rawData);
 }
+
+// ============================================================================
+// 🚨 静态技能字典 (Fallback Registry)
+// 逻辑：在 KV 动态元数据完全跑通前，先用这个静态字典兜底，确保 10 个技能都能被 Agent 发现。
+// ============================================================================
+const FALLBACK_TOOLS = [
+    {
+        name: "uniskill_search",
+        description: "Perform real-time web searches using the Tavily engine.",
+        inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
+    },
+    {
+        name: "uniskill_news",
+        description: "Fetch global news headlines and summaries.",
+        inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
+    },
+    {
+        name: "uniskill_scrape",
+        description: "Scrape and extract text content from any webpage URL.",
+        inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }
+    },
+    {
+        name: "uniskill_weather",
+        description: "Get current weather forecast for a location.",
+        inputSchema: { type: "object", properties: { location: { type: "string" } }, required: ["location"] }
+    },
+    {
+        name: "uniskill_math",
+        description: "A native math calculation engine with no hallucination.",
+        inputSchema: { type: "object", properties: { expression: { type: "string" } }, required: ["expression"] }
+    },
+    {
+        name: "uniskill_time",
+        description: "Get current time and convert between timezones.",
+        inputSchema: { type: "object", properties: { timezone: { type: "string" } }, required: [] }
+    },
+    {
+        name: "uniskill_crypto_util",
+        description: "Perform crypto hashing, UUID generation, and Base64 encoding.",
+        inputSchema: { type: "object", properties: { action: { type: "string", enum: ["hash", "uuid", "base64"] }, data: { type: "string" } }, required: ["action"] }
+    },
+    {
+        name: "uniskill_geo",
+        description: "Location and map geocoding engine.",
+        inputSchema: { type: "object", properties: { location: { type: "string" } }, required: ["location"] }
+    },
+    {
+        name: "uniskill_wiki",
+        description: "Search and read Wikipedia articles.",
+        inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
+    },
+    {
+        name: "uniskill_github_tracker",
+        description: "Monitors GitHub trends to track emerging open-source tools, growth velocity, and author backgrounds.",
+        inputSchema: { 
+            type: "object", 
+            properties: { 
+                timeWindow: { type: "string", enum: ["daily", "weekly", "monthly"], description: "The timeframe to analyze." },
+                language: { type: "string", description: "Target programming language." },
+                topic: { type: "string", description: "Specific domain tag (e.g., web3, machine-learning)." }
+            }, 
+            required: ["timeWindow"] 
+        }
+    }
+];
 
 // ============================================================================
 // 🟢 通道 1: SSE 握手与监听端点 (GET)
@@ -44,15 +101,12 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
         async start(controller) {
             console.log(`[MCP] 🔗 SSE Connection opened: ${sessionId}`);
 
-            // 1. 告诉 Agent 去哪里发 POST
             const postEndpoint = `/v1/mcp/message?sessionId=${sessionId}`;
             const initMessage = `event: endpoint\ndata: ${postEndpoint}\n\n`;
             controller.enqueue(encoder.encode(initMessage));
 
-            // 2. 开启极客轮询模式 (每 500ms 去 KV 里看一眼有没有人发消息)
             let isConnected = true;
 
-            // 如果连接断开，停止轮询
             request.signal.addEventListener("abort", () => {
                 isConnected = false;
                 console.log(`[MCP] ❌ Client aborted SSE: ${sessionId}`);
@@ -69,38 +123,79 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
                         const { id, method, params } = payload;
                         let result: any = {};
 
-                        // --- 🛠️ 业务逻辑执行区 ---
+                        // --- 🛠️ 业务逻辑执行区 (Business Logic Execution) ---
                         if (method === "tools/list") {
-                            const kvList = await env.UNISKILL_KV.list({ prefix: "skill:official:" });
-                            const mcpTools = [];
-                            for (const key of kvList.keys) {
-                                const skillStr = await env.UNISKILL_KV.get(key.name);
-                                if (skillStr) {
-                                    const skill = JSON.parse(skillStr);
-                                    mcpTools.push({
-                                        name: skill.id,
-                                        description: skill.meta?.description || "A UniSkill tool.",
-                                        inputSchema: skill.meta?.parameters || { type: "object", properties: {} }
-                                    });
+                            try {
+                                // 1. 并发尝试从 KV 动态拉取所有"官方"与"社区"技能
+                                // (Concurrently fetch both official and community/market skills to bypass KV single-prefix limit)
+                                const [officialList, marketList] = await Promise.all([
+                                    env.UNISKILL_KV.list({ prefix: "skill:official:" }),
+                                    env.UNISKILL_KV.list({ prefix: "skill:market:" }) // 未来社区创作者的技能前缀
+                                ]);
+
+                                // 合并所有的键 (Merge all detected keys)
+                                const allKeys = [...officialList.keys, ...marketList.keys];
+                                const dynamicTools = [];
+
+                                // 2. 高性能并发读取所有技能的具体内容 (High-performance concurrent value fetching)
+                                // 避免在 for 循环里一个个 await 导致网关响应变慢
+                                const skillPromises = allKeys.map(key => env.UNISKILL_KV.get(key.name));
+                                const skillStrings = await Promise.all(skillPromises);
+
+                                for (let i = 0; i < allKeys.length; i++) {
+                                    const skillStr = skillStrings[i];
+                                    if (skillStr) {
+                                        try {
+                                            const skill = JSON.parse(skillStr);
+                                            // 智能提取技能名称，移除前缀 (Extract clean skill ID)
+                                            const skillName = skill.id || allKeys[i].name.replace(/^skill:(official|market):/, "");
+
+                                            // 核心防雷：强制组装成严格符合 MCP 规范的 Schema
+                                            // (Core safeguard: Force strictly compliant MCP Schema to prevent Agent parsing errors)
+                                            dynamicTools.push({
+                                                name: skillName,
+                                                description: skill.meta?.description || `UniSkill Tool: ${skillName}`,
+                                                inputSchema: {
+                                                    type: "object",
+                                                    properties: skill.meta?.parameters?.properties || {},
+                                                    required: skill.meta?.parameters?.required || []
+                                                }
+                                            });
+                                        } catch (parseError) {
+                                            console.error(`[MCP] ⚠️ Failed to parse skill JSON for key: ${allKeys[i].name}`, parseError);
+                                        }
+                                    }
                                 }
+
+                                // 3. 决策与降级 (Decision & Fallback)
+                                if (dynamicTools.length > 0) {
+                                    // 完美情况：KV 正常，返回动态技能列表 (包括官方与社区)
+                                    console.log(`[MCP] 🟢 Successfully loaded ${dynamicTools.length} dynamic tools from KV.`);
+                                    result = { tools: dynamicTools };
+                                } else {
+                                    // 异常情况：KV 里没数据，安全降级使用静态兜底列表
+                                    console.warn("[MCP] ⚠️ KV returned 0 tools. Falling back to FALLBACK_TOOLS.");
+                                    result = { tools: FALLBACK_TOOLS };
+                                }
+
+                            } catch (err) {
+                                // 彻底崩溃兜底：连读 KV 都报错了，依然返回静态列表保命
+                                console.error("[MCP] ❌ Critical error loading from KV. Using fallback:", err);
+                                result = { tools: FALLBACK_TOOLS };
                             }
-                            result = { tools: mcpTools };
                         }
                         else if (method === "tools/call") {
                             const toolName = params.name;
                             const toolArguments = params.arguments;
 
-                            // 优先级：1. POST 消息自带的验证头 2. GET 握手的验证头
                             const msgAuth = payload.authHeader;
                             const handshakeAuth = request.headers.get("Authorization") || "";
                             const authHeader = msgAuth || handshakeAuth;
 
                             let finalOutput = "";
                             try {
-                                // Logic: ALL skills (including weather, scrape) go through handleExecuteSkill
-                                // This ensures Auth → Rate Limit → Billing → Execution is always applied.
                                 const executeUrl = new URL(request.url);
-                                executeUrl.pathname = `/v1/execute/${toolName}`;
+                                executeUrl.pathname = `/v1/execute`; // 注意：确保与您的 execute-skill.ts 路由匹配
 
                                 const internalRequest = new Request(executeUrl.toString(), {
                                     method: "POST",
@@ -108,22 +203,31 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
                                         "Authorization": authHeader,
                                         "Content-Type": "application/json"
                                     },
-                                    body: JSON.stringify(toolArguments || {})
+                                    // 必须将请求组装成网关能懂的格式 (skill + params)
+                                    body: JSON.stringify({
+                                        skill: toolName,
+                                        params: toolArguments || {}
+                                    })
                                 });
 
                                 const response = await handleExecuteSkill(internalRequest, env, ctx);
-                                const resultRaw = await response.text();
-
-                                try {
-                                    const parsed = JSON.parse(resultRaw);
-                                    finalOutput = formatToolResponse(parsed);
-                                } catch {
-                                    finalOutput = formatToolResponse(resultRaw);
+                                
+                                if (!response.ok) {
+                                    finalOutput = `[Error] Gateway rejected the request with status: ${response.status}. Message: ${await response.text()}`;
+                                } else {
+                                    const resultRaw = await response.text();
+                                    try {
+                                        const parsed = JSON.parse(resultRaw);
+                                        finalOutput = formatToolResponse(parsed);
+                                    } catch {
+                                        finalOutput = formatToolResponse(resultRaw);
+                                    }
                                 }
                             } catch (apiError: any) {
                                 finalOutput = `[Tool Execution Failed] Upstream API Error: ${apiError.message || "Unknown error"}`;
                             }
 
+                            // 严格遵守 MCP 的返回格式
                             result = {
                                 content: [{ type: "text", text: finalOutput }]
                             };
@@ -146,7 +250,6 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
                     }
                 } catch (e: any) {
                     console.error("SSE Polling error:", e);
-                    // 即使出错也尝试给对端一个错误响应，防止挂起
                 }
 
                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -187,11 +290,9 @@ export async function handleMCPMessage(request: Request, env: Env): Promise<Resp
 
     console.log(`[MCP] ✍️ POST received, writing to KV Broker for session ${sessionId}`);
 
-    // 把当前请求的 Authorization 头也装进锦囊，传给监听者
     const authHeader = request.headers.get("Authorization");
     const brokerPayload = { ...payload, authHeader };
 
-    // 将指令写进 KV 传达室！设置 5 分钟过期，防止垃圾数据堆积
     await env.UNISKILL_KV.put(`mcp_msg:${sessionId}`, JSON.stringify(brokerPayload), { expirationTtl: 300 });
 
     return new Response("Accepted", { status: 202 });

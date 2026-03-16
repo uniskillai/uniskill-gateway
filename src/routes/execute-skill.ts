@@ -55,7 +55,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     
     // If not in path, check the body (required for /v1/execute)
     if (!skillName) {
-        skillName = body.skill_name || body.skillName;
+        skillName = body.skill_name || body.skillName || body.skill;
     }
 
     if (!skillName) {
