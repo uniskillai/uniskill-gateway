@@ -196,3 +196,22 @@ export async function handleMCPMessage(request: Request, env: Env): Promise<Resp
 
     return new Response("Accepted", { status: 202 });
 }
+
+// ============================================================================
+// 🔵 通道 3: M2M 专用执行入口 (Web3 计费 + 任务分发)
+// ============================================================================
+export async function handleM2MCall(_request: Request, env: Env): Promise<Response> {
+    // 逻辑：该端点是为“野生 Agent”准备的付费执行入口。
+    // 未来在这里集成 Nevermined SDK 或 Stripe Web3 Payment 扣费逻辑。
+    
+    return new Response(JSON.stringify({
+        success: true,
+        message: "M2M Execution Engine reached.",
+        environment: env.ENVIRONMENT,
+        m2m_enabled: env.ENABLE_M2M_PAYMENTS,
+        note: "Web3/Nevermined billing integration is in progress on feat/web3-payment branch."
+    }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+    });
+}
