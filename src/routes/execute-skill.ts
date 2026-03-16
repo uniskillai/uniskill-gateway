@@ -169,7 +169,8 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         }
 
         // ── Step 4: Rate Limit Check ──
-        const userTier = await getTier(env.UNISKILL_KV, keyHash);
+        const userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
+        const userTier = await getTier(env.UNISKILL_KV, userUid, env);
         const rlResult = await checkRateLimit(keyHash, userTier, env);
 
         if (!rlResult.isAllowed) {
@@ -177,8 +178,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         }
 
         // ── Step 5: Identity & Billing Check ──
-        const userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
-        let currentCredits = await getCredits(env.UNISKILL_KV, keyHash);
+        let currentCredits = await getCredits(env.UNISKILL_KV, userUid, env, keyHash);
         if (currentCredits === -1) currentCredits = 0;
 
         if (currentCredits < skillCost) {
@@ -249,12 +249,13 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         if (skillCost > 0) {
             ctx.waitUntil(deductCredit(
                 env.UNISKILL_KV,
-                keyHash,
+                userUid,
                 currentCredits,
                 skillCost,
                 env.VERCEL_WEBHOOK_URL,
                 env.ADMIN_KEY,
-                normalizedSkillName
+                normalizedSkillName,
+                keyHash
             ));
         }
 

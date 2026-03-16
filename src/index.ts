@@ -55,14 +55,20 @@ export default {
           keyHash = await hashKey(rawKey);
         }
 
+        let userUid: string | undefined = undefined;
+        if (keyHash) {
+          const { getUserUid } = await import("./utils/billing");
+          userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
+        }
+
         const skills = [];
         const scanCategories = [
           { prefix: "skill:official:", source: "official" },
           { prefix: "skill:market:", source: "market" }
         ];
 
-        if (keyHash) {
-          scanCategories.unshift({ prefix: `skill:private:${keyHash}:`, source: "private" });
+        if (userUid) {
+          scanCategories.unshift({ prefix: `skill:private:${userUid}:`, source: "private" });
         }
 
         for (const cat of scanCategories) {
@@ -137,7 +143,9 @@ export default {
         let source: "official" | "private" | "market" = "official";
 
         if (keyHash) {
-          skillRaw = await env.UNISKILL_KV.get(SkillKeys.private(keyHash, skillName));
+          const { getUserUid } = await import("./utils/billing");
+          const userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
+          skillRaw = await env.UNISKILL_KV.get(SkillKeys.private(userUid, skillName));
           if (skillRaw) source = "private";
         }
         if (!skillRaw) {

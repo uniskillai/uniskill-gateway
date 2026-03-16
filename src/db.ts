@@ -35,3 +35,30 @@ export const fetchUserDataFromDB = async (
         credits: typeof data?.credits === "number" ? data.credits : 0,
     };
 };
+
+/**
+ * Fetch the user's data (tier and credits) from the 'profiles' table using UID.
+ */
+export const fetchUserDataByUid = async (
+    uid: string,
+    env: any
+): Promise<{ user_uid: string, tier: string; credits: number }> => {
+    const supabase = getSupabaseClient(env);
+
+    const { data, error } = await supabase
+        .from("profiles")
+        .select("user_uid, tier, credits") 
+        .eq("user_uid", uid)
+        .single();
+
+    if (error) {
+        console.error("[DB Fallback] Supabase query error by UID:", error.message);
+        return { user_uid: uid, tier: "FREE", credits: 0 };
+    }
+
+    return {
+        user_uid: data?.user_uid || uid,
+        tier: data?.tier?.toUpperCase() || "FREE",
+        credits: typeof data?.credits === "number" ? data.credits : 0,
+    };
+};

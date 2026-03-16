@@ -5,7 +5,7 @@
 
 import { SkillKeys } from "./skill-keys";
 
-import { fetchUserDataFromDB } from "../db";
+import { fetchUserDataFromDB, fetchUserDataByUid } from "../db";
 
 /**
  * In-Memory cache for reducing KV read latency.
@@ -25,15 +25,35 @@ function getCache(key: string) {
 }
 
 /**
- * Reads the current credit balance for a key hash from KV.
+ * Reads the current credit balance for a user from KV.
+ * Logic: Two-stage fallback (UID -> Hash Migration -> DB)
  */
-export async function getCredits(kv: KVNamespace, keyHash: string): Promise<number> {
-    const cacheKey = `credits:${keyHash}`;
+export async function getCredits(kv: KVNamespace, uid: string, env: any, keyHash?: string): Promise<number> {
+    const cacheKey = `credits:${uid}`;
     const cached = getCache(cacheKey);
     if (cached !== null) return cached;
 
-    const raw = await kv.get(SkillKeys.credits(keyHash));
-    if (raw === null) return -1;
+    // 1. Try UID-based key (Stable)
+    let raw = await kv.get(SkillKeys.credits(uid));
+    
+    // 2. Automatic Migration: Try old Hash-based key if UID miss
+    if (raw === null && keyHash) {
+        raw = await kv.get(`user:credits:${keyHash}`); // Manual legacy lookup
+        if (raw !== null) {
+            console.log(`[Migration] Moving credits from hash to uid for ${uid}`);
+            await kv.put(SkillKeys.credits(uid), raw);
+            // Optionally delete old key later
+        }
+    }
+
+    // 3. DB Fallback
+    if (raw === null) {
+        console.log(`[Billing] KV miss for credits (uid: ${uid}), hitting DB.`);
+        const userData = await fetchUserDataByUid(uid, env);
+        raw = String(userData.credits);
+        await kv.put(SkillKeys.credits(uid), raw, { expirationTtl: 86400 });
+    }
+
     const credits = parseFloat(raw);
     const finalCredits = isNaN(credits) ? 0 : credits;
     
@@ -43,28 +63,28 @@ export async function getCredits(kv: KVNamespace, keyHash: string): Promise<numb
 
 /**
  * Retrieves the stable User UID for a key hash.
- * Logic: KV first, then DB fallback + Write-back.
+ * Stage 1 of Two-Stage Routing: Mapping Hash to stable Identity.
  */
 export async function getUserUid(kv: KVNamespace, keyHash: string, env: any): Promise<string> {
     const cacheKey = `uid:${keyHash}`;
     const cached = getCache(cacheKey);
     if (cached) return cached;
 
-    // 1. Try KV
+    // 1. Try KV (Hash -> UID Mapping)
     let uid = await kv.get(SkillKeys.userUid(keyHash));
     if (uid) {
         setCache(cacheKey, uid);
         return uid;
     }
 
-    // 2. Fallback to Supabase
-    console.log(`[Identity] KV miss for UID (hash: ...${keyHash.slice(-6)}), hitting DB.`);
+    // 2. Fallback to Supabase (Source of Truth)
+    console.log(`[Identity] KV miss for UID map (hash: ...${keyHash.slice(-6)}), hitting DB.`);
     const userData = await fetchUserDataFromDB(keyHash, env);
     uid = userData.user_uid;
 
     // 3. Write-back to KV for future requests
     if (uid && uid !== "anonymous") {
-        await kv.put(SkillKeys.userUid(keyHash), uid, { expirationTtl: 86400 * 7 }); // Cache for 7 days
+        await kv.put(SkillKeys.userUid(keyHash), uid, { expirationTtl: 86400 * 30 }); // Mapping is long-lived
         setCache(cacheKey, uid);
     }
 
@@ -72,17 +92,28 @@ export async function getUserUid(kv: KVNamespace, keyHash: string, env: any): Pr
 }
 
 /**
- * Reads the current subscription tier for a key hash from KV.
- * KV schema: tier:{hash}
- * Default: FREE
+ * Reads the current subscription tier for a user from KV.
  */
-export async function getTier(kv: KVNamespace, keyHash: string): Promise<string> {
-    const raw = await kv.get(SkillKeys.tier(keyHash));
-    return raw || "FREE";
+export async function getTier(kv: KVNamespace, uid: string, env: any): Promise<string> {
+    const cacheKey = `tier:${uid}`;
+    const cached = getCache(cacheKey);
+    if (cached) return cached;
+
+    let raw = await kv.get(SkillKeys.tier(uid));
+
+    if (raw === null) {
+        const userData = await fetchUserDataByUid(uid, env);
+        raw = userData.tier || "FREE";
+        await kv.put(SkillKeys.tier(uid), raw, { expirationTtl: 86400 });
+    }
+
+    setCache(cacheKey, raw);
+    return raw;
 }
 
 /**
  * Pushes the new credit balance back to Supabase via the Vercel Webhook.
+ * Maintains keyHash for backward compatibility with uniskill-web.
  */
 async function syncToSupabase(
     webhookUrl: string,
@@ -97,15 +128,12 @@ async function syncToSupabase(
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                // Logic: UniSkill Web expects Authorization: Bearer <ADMIN_KEY>
                 "Authorization": `Bearer ${adminKey}`,
             },
             body: JSON.stringify({ hash: keyHash, newBalance, skillName, amount: -cost }),
         });
         if (!res.ok) {
             console.error(`[Sync] Webhook returned ${res.status}: ${await res.text()}`);
-        } else {
-            console.log(`[Sync] Supabase updated → ...${keyHash.slice(-6)} balance=${newBalance} skill=${skillName}`);
         }
     } catch (err) {
         console.error("[Sync] Failed to reach Vercel Webhook:", err);
@@ -113,30 +141,28 @@ async function syncToSupabase(
 }
 
 /**
- * Deducts `cost` credits from the key hash's balance,
- * persists it to KV, then syncs the new balance to Supabase.
+ * Deducts `cost` credits from the user's balance.
  */
 export async function deductCredit(
     kv: KVNamespace,
-    keyHash: string,
+    uid: string,
     currentCredits: number,
     cost = 1,
     webhookUrl?: string,
     adminKey?: string,
-    skillName = "unknown"
+    skillName = "unknown",
+    keyHash?: string // Required for DB sync if webhook relies on it
 ): Promise<void> {
     const newBalance = Math.round((currentCredits - cost) * 100) / 100;
 
-    // Step 1: 写回 KV（使用标准 Key）
-    await kv.put(SkillKeys.credits(keyHash), String(newBalance));
+    // Step 1: 写回 KV（使用稳定 UID Key）
+    await kv.put(SkillKeys.credits(uid), String(newBalance));
     
-    // Refresh In-Memory Cache immediately
-    setCache(`credits:${keyHash}`, newBalance);
+    // Refresh In-Memory Cache
+    setCache(`credits:${uid}`, newBalance);
 
-    // Step 2: 异步回写 Supabase
-    if (webhookUrl && adminKey) {
+    // Step 2: 异步回写 Supabase (使用 Hash 以匹配现有 Web 端逻辑)
+    if (webhookUrl && adminKey && keyHash) {
         await syncToSupabase(webhookUrl, adminKey, keyHash, newBalance, skillName, cost);
-    } else {
-        console.warn("[Sync] VERCEL_WEBHOOK_URL or ADMIN_KEY not set. Skipping Supabase sync.");
     }
 }

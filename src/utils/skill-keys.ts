@@ -8,10 +8,10 @@ export const SkillKeys = {
     official: (name: string) => `skill:official:${name}`,
 
     /**
-     * Logic: Private skills now indexed by key_hash
-     * 逻辑：私有技能现在通过 key_hash 进行索引，确保用户间数据隔离
+     * Logic: Private skills now indexed by user_uid for stability across key resets
+     * 逻辑：私有技能现在通过 user_uid 进行索引，确保 Key 重置后数据不丢失
      */
-    private: (keyHash: string, name: string) => `skill:private:${keyHash}:${name}`,
+    private: (uid: string, name: string) => `skill:private:${uid}:${name}`,
 
     /**
      * Logic: Marketplace skills are public but carry author attribution
@@ -19,19 +19,19 @@ export const SkillKeys = {
      */
     market: (name: string) => `skill:market:${name}`,
 
-    // Logic: Credit storage indexed by key_hash
-    // 逻辑：积分存储以 key_hash 作为唯一标识
-    credits: (keyHash: string) => `user:credits:${keyHash}`,
+    // Logic: Credit storage indexed by user_uid
+    // 逻辑：积分存储以 user_uid 作为唯一主键
+    credits: (uid: string) => `user:credits:${uid}`,
 
     /**
-     * Logic: User tier information indexed by key_hash
-     * 逻辑：用户档位信息，以 key_hash 索引
+     * Logic: User tier information indexed by user_uid
+     * 逻辑：用户档位信息，以 user_uid 索引
      */
-    tier: (keyHash: string) => `tier:${keyHash}`,
+    tier: (uid: string) => `tier:${uid}`,
 
     /**
-     * Logic: Stable user UID indexed by key_hash
-     * 逻辑：稳定的用户 UID，以 key_hash 索引
+     * Logic: Stable user UID mapping indexed by key_hash
+     * 逻辑：稳定的用户 UID 映射关系，以 key_hash 索引
      */
     userUid: (keyHash: string) => `user:uid:${keyHash}`,
 
