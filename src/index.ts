@@ -5,11 +5,16 @@
 import { hashKey } from "./utils/auth";
 import { SkillKeys } from "./utils/skill-keys";
 import { handleProvision } from "./routes/admin";
-import { handleMCPSse, handleMCPMessage } from "./routes/mcp-server";
+import { handleMCPSse, handleMCPMessage, handleM2MCall } from "./routes/mcp-server";
 import { handleExecuteSkill } from "./routes/execute-skill";
 import { handleAuthVerify } from "./routes/auth";
 import { errorResponse, corsHeaders, successResponse } from "./utils/response";
 import { SkillParser } from "./engine/parser";
+
+// 辅助函数：从请求头中提取钱包地址 (用于 M2M 灰度锁)
+function extractAddress(request: Request): string {
+  return request.headers.get("X-Agent-Wallet") || "anonymous";
+}
 
 // ── 环境变量类型声明 ──────────────────────────────────────────
 export interface Env {
@@ -23,6 +28,12 @@ export interface Env {
   SUPABASE_ANON_KEY: string;
   WEB_DOMAIN: string;
   INTERNAL_API_SECRET: string;
+  DEFAULT_SETTLEMENT_ASSET?: string;
+  // --- New Environment Control Vars ---
+  ENABLE_M2M_PAYMENTS: string;
+  ENVIRONMENT: string;
+  NEVERMINED_PLAN_ID: string;
+  TEST_WALLET_ADDRESS?: string;
 }
 
 export default {
@@ -186,6 +197,29 @@ export default {
       // 路由：MCP 消息接收端点 (Agent 的第二步)
       if (cleanPath === "/v1/mcp/message" && method === "POST") {
         return handleMCPMessage(request, env);
+      }
+
+      // ── M2M / Autonomous Agent Entry Points (Web3) ──
+
+      // 路由：M2M 专用执行入口 (带支付网关锁)
+      if (cleanPath === "/v1/mcp/call" && method === "POST") {
+        // 1. 检查 M2M 支付总闸门 (Gene Lock 1)
+        if (env.ENABLE_M2M_PAYMENTS !== 'true') {
+          return new Response(JSON.stringify({ 
+            error: "Machine-to-Machine (M2M) payments and Autonomous Agent access are currently disabled." 
+          }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        // 2. Staging 专属白名单校验 (Gene Lock 2)
+        const callerWallet = extractAddress(request);
+        if (env.ENVIRONMENT === 'staging' && callerWallet !== env.TEST_WALLET_ADDRESS) {
+          return new Response(JSON.stringify({ 
+            error: "Staging environment is strictly locked to the Admin Wallet for testing." 
+          }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        // 3. 进入 Web3 支付与执行逻辑 (Nevermined / Web3 Hook)
+        return handleM2MCall(request, env);
       }
 
       // 路由：天气查询服务 — 走 handleExecuteSkill 以保证鉴权 + 计费

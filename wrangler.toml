@@ -2,50 +2,57 @@
 # UniSkill Gateway - Cloudflare Workers Configuration
 # ============================================================
 
-# Logic: Project identifier in Cloudflare dashboard
-# 逻辑：在 Cloudflare 仪表盘中显示的项目名称
 name = "uniskill-gateway"
-
-# Logic: Main entry point of the refactored engine
-# 逻辑：重构后引擎的总路由入口文件
 main = "src/index.ts"
-
-# Logic: Ensures the worker uses the V8 engine features available on this date
-# 逻辑：确保 Worker 使用该日期及之前的 V8 引擎特性，保证向后兼容性
 compatibility_date = "2024-03-06"
-
-# Logic: Supporting natively implemented Node.js APIs
-# 逻辑：支持原生实现的 Node.js API
 compatibility_flags = ["nodejs_compat"]
 
-
 # ── KV Storage Bindings ─────────────────────────────────────
-# Logic: Binds the KV namespace to the 'UNISKILL_KV' variable in the Env interface
-# 逻辑：将 KV 命名空间绑定到代码中 Env 接口的 'UNISKILL_KV' 变量
-
 [[kv_namespaces]]
 binding = "UNISKILL_KV"
-# Logic: REPLACE THIS with your actual KV ID from the Cloudflare Dashboard
-# 逻辑：请替换为您在 Cloudflare 控制台创建的真实 KV ID
 id = "9f388e510ffc426c8320f839ae769fe3"
 
 
-# ── Public Environment Variables ────────────────────────────
-# Logic: Non-sensitive variables that can be committed to GitHub
-# 逻辑：非敏感的环境变量，可以安全地提交到 GitHub
-
+# ---------------------------------------------------
+# 🟢 全局变量 & 生产环境配置 (Production)
+# ---------------------------------------------------
 [vars]
-# 逻辑：Supabase 的公开 API 地址
 SUPABASE_URL = "https://iwijeijjpnojtolvcxtp.supabase.co"
-
-# 逻辑：用于接收异步计费回调的 Webhook 地址
 VERCEL_WEBHOOK_URL = "https://www.uniskill.ai/api/webhook/sync-credits"
-
-# 逻辑：Web 服务主域名，用于动态拉取配置
 WEB_DOMAIN = "https://uniskill.ai"
-
-# 逻辑：用于生成静态预览图的 Mapbox 密钥 (非必填，填入可启用地图)
 MAPBOX_API_KEY = "your_mapbox_api_key_here"
 
+# Web3/M2M 商业化总闸门 (更专业的命名: 机器到机器支付)
+ENABLE_M2M_PAYMENTS = "false" 
+ENVIRONMENT = "production"
+NEVERMINED_PLAN_ID = "" 
+
+
+# ---------------------------------------------------
+# 🟠 测试环境配置 (Staging)
+# ---------------------------------------------------
+[env.staging]
+name = "uniskill-gateway-staging"
+
+[[env.staging.kv_namespaces]]
+binding = "UNISKILL_KV"
+id = "9f388e510ffc426c8320f839ae769fe3"
+
+[env.staging.vars]
+# Inherited production-level vars needed for staging
+SUPABASE_URL = "https://iwijeijjpnojtolvcxtp.supabase.co"
+VERCEL_WEBHOOK_URL = "https://www.uniskill.ai/api/webhook/sync-credits"
+WEB_DOMAIN = "https://uniskill.ai"
+MAPBOX_API_KEY = "your_mapbox_api_key_here"
+
+# 开启 M2M 机器支付逻辑测试
+ENABLE_M2M_PAYMENTS = "true" 
+ENVIRONMENT = "staging"
+NEVERMINED_PLAN_ID = "did:nv:72454963757825695651137500032031971678181590824755941877945257628452503989205" 
+TEST_WALLET_ADDRESS = "0xfA90a817E010BD2665C04A6D1d2Ba3fAcd30eFEB"
+
+# ---------------------------------------------------
+# 💻 本地开发环境配置
+# ---------------------------------------------------
 [dev]
 port = 8787
