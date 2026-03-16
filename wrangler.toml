@@ -49,3 +49,11 @@ MAPBOX_API_KEY = "your_mapbox_api_key_here"
 
 [dev]
 port = 8787
+
+# ── Staging Environment ─────────────────────────────────────
+[env.staging]
+name = "uniskill-gateway-staging"
+vars = { ENVIRONMENT = "staging", ENABLE_M2M_PAYMENTS = "true", TEST_WALLET_ADDRESS = "0xfA90a817E010BD2665C04A6D1d2Ba3fAcd3983D5" }
+[[env.staging.kv_namespaces]]
+binding = "UNISKILL_KV"
+id = "9f388e510ffc426c8320f839ae769fe3"
