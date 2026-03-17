@@ -9,7 +9,7 @@ const getSupabaseClient = (env: any) => {
 
 /**
  * Records skill usage in Supabase using the integrated 'skills' table.
- * Supports dual-dimension statistics (credits/usdc).
+ * Supports dual-dimension statistics (credits/usd).
  */
 export async function recordSkillCall(
     env: any, 
@@ -17,7 +17,7 @@ export async function recordSkillCall(
     skillName: string, 
     requestId: string,
     credits: number = 0, 
-    paymentType: 'credits' | 'usdc' = 'credits', 
+    paymentType: 'credits' | 'usd' = 'credits', 
     status: string = 'success',
     creditsPerCall?: number,
     display_name?: string, // Added for initial sync
