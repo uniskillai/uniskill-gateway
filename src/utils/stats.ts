@@ -33,7 +33,7 @@ export async function recordSkillCall(
             p_request_id: requestId,
             p_cost: credits,
             p_status: status,
-            p_cost_per_call: creditsPerCall,
+            p_credits_per_call: creditsPerCall,
             p_display_name: display_name,
             p_tags: tags
         });
