@@ -188,6 +188,20 @@ export default {
         return handleProvision(request, env);
       }
 
+      // 触发全局刷新的内部 API 端点 (Internal API to trigger global refresh)
+      if (cleanPath === "/v1/admin/refresh-tools" && method === "POST") {
+          // 只有您知道的超级密码 (Your secret admin token)
+          if (request.headers.get("Authorization") !== `Bearer ${env.INTERNAL_API_SECRET}`) {
+              return errorResponse("Unauthorized", 401);
+          }
+          
+          // 在 KV 里写入当前时间戳，触发全局广播
+          // (Write current timestamp to KV to trigger global broadcast)
+          await env.UNISKILL_KV.put("mcp_broadcast:tools_changed", Date.now().toString());
+          
+          return new Response("Global tool refresh triggered successfully!", { status: 200 });
+      }
+
       // 路由：MCP SSE 握手端点 (Agent 的第一步)
       if (cleanPath === "/v1/mcp/sse" && method === "GET") {
         return handleMCPSse(request, env, ctx);

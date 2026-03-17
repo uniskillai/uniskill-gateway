@@ -20,7 +20,8 @@ const HARDCODED_NATIVE_SKILLS = new Set([
     "uniskill_time",
     "uniskill_crypto_util",
     "uniskill_geo",
-    "uniskill_github_tracker"
+    "uniskill_github_tracker",
+    "uniskill_smart_chart"
 ]);
 
 export async function handleExecuteSkill(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -140,6 +141,13 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             } else if (normalizedSkillName === "uniskill_github_tracker") {
                 const { handleGithubTracker } = await import("./github-tracker");
                 nativeResponse = await handleGithubTracker(syntheticRequest, env);
+            } else if (normalizedSkillName === "uniskill_smart_chart") {
+                const { executeSmartChart } = await import("./uniskill-smart-chart");
+                const result = await executeSmartChart(params, env);
+                nativeResponse = new Response(JSON.stringify(result), {
+                    status: 200,
+                    headers: { "Content-Type": "application/json" }
+                });
             } else {
                 return errorResponse(`Native handler not found for: ${normalizedSkillName}`, 500);
             }
