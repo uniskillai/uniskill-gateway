@@ -14,7 +14,7 @@ import { fetchUserDataFromDB, fetchUserDataByUid } from "../db";
 const MEM_CACHE: Record<string, { val: any, expiry: number }> = {};
 const CACHE_TTL = 60000; // 60 seconds
 
-function setCache(key: string, val: any) {
+export function setCache(key: string, val: any) {
     MEM_CACHE[key] = { val, expiry: Date.now() + CACHE_TTL };
 }
 

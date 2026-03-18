@@ -4,7 +4,7 @@
 // ============================================================
 
 import { GATEWAY_VERSION } from "../utils/response.ts";
-import { getCredits } from "../utils/billing.ts";
+import { getCredits, setCache } from "../utils/billing.ts";
 import type { Env } from "../index.ts";
 
 // 默认签发的初始信用点数
@@ -96,8 +96,11 @@ export async function handleTopup(request: Request, env: Env): Promise<Response>
 
     // 2. 更新 KV (Update KV)
     await env.UNISKILL_KV.put(SkillKeys.credits(userUid), String(newBalance));
+    setCache(`credits:${userUid}`, newBalance); // 更新内存缓存 (Update memory cache)
+
     if (newTier) {
         await env.UNISKILL_KV.put(SkillKeys.tier(userUid), newTier);
+        setCache(`tier:${userUid}`, newTier); // 更新等级缓存 (Update tier cache)
     }
 
     console.log(`[Admin] Top-up successful for ${userUid}: +${creditsToAdd} credits, New Balance: ${newBalance}, Tier: ${newTier || "unchanged"}`);
