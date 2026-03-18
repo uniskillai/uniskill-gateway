@@ -22,33 +22,33 @@ export async function handleProvision(request: Request, env: Env): Promise<Respo
 
     // ── Step 2: 解析请求体 ───────────────────────────────
     let initialCredits = DEFAULT_INITIAL_CREDITS;
-    let providedHash: string | undefined = undefined;
+    let keyHash: string | undefined = undefined;
+    let userUid: string | undefined = undefined;
     let userTier = "FREE";
 
     try {
         const body = await request.json() as any;
-        if (body.credits) initialCredits = Number(body.credits);
-        if (body.hash) providedHash = body.hash;
+        initialCredits = Number(body.credits ?? DEFAULT_INITIAL_CREDITS);
+        keyHash = body.key_hash || body.hash;
+        userUid = body.user_uid || body.uid;
         if (body.tier) userTier = body.tier.toUpperCase();
     } catch { /* ignore */ }
 
-    // ── Step 3: 确定 Hash ───────────────────────────────
-    let rawKey: string | undefined = undefined;
-    let keyHash: string;
-
-    if (providedHash) {
-        keyHash = providedHash;
-    } else {
-        rawKey = `us-${crypto.randomUUID()}`;
-        keyHash = await hashKey(rawKey);
+    if (!keyHash || !userUid) {
+        return new Response(
+            JSON.stringify({ success: false, error: "Missing required fields: key_hash or user_uid" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+        );
     }
 
-    // ── Step 4: 写入 KV（使用平台化标准 Key）───────────────
-    // 逻辑：写入积分，Key 必须符合 user:credits:{hash} 格式
-    await env.UNISKILL_KV.put(SkillKeys.credits(keyHash), String(initialCredits));
+    // ── Step 3: 写入 KV（核心：哈希解耦与 UID 绑定）───────────────
+    
+    // 1. 建立 Hash -> UID 的映射
+    await env.UNISKILL_KV.put(`user:uid:${keyHash}`, userUid);
 
-    // 逻辑：写入档位，Key 符合 tier:{hash} 格式
-    await env.UNISKILL_KV.put(SkillKeys.tier(keyHash), userTier);
+    // 2. 将业务状态（积分、等级）严格绑定到真实的 User UID
+    await env.UNISKILL_KV.put(`user:credits:${userUid}`, String(initialCredits));
+    await env.UNISKILL_KV.put(`tier:${userUid}`, userTier);
 
     // ── Step 6: 返回原始 Key（仅此一次）和元数据 ────────────
     return new Response(
