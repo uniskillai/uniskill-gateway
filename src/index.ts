@@ -188,6 +188,17 @@ export default {
         return handleProvision(request, env);
       }
 
+      // 路由：Admin Top-up (Purchase sync)
+      if (cleanPath === "/v1/admin/topup" && method === "POST") {
+        const authHeader = request.headers.get("Authorization") || "";
+        const adminSecret = authHeader.replace("Bearer ", "").trim();
+        if (adminSecret !== env.ADMIN_KEY) {
+          return errorResponse("Unauthorized Admin Access", 401);
+        }
+        const { handleTopup } = await import("./routes/admin");
+        return handleTopup(request, env);
+      }
+
       // 触发全局刷新的内部 API 端点 (Internal API to trigger global refresh)
       if (cleanPath === "/v1/admin/refresh-tools" && method === "POST") {
           // 只有您知道的超级密码 (Your secret admin token)
