@@ -188,15 +188,15 @@ export default {
         return handleProvision(request, env);
       }
 
-      // 路由：Admin Top-up (Purchase sync)
-      if (cleanPath === "/v1/admin/topup" && method === "POST") {
+      // 路由：Admin Sync Cache (Push mode from Control Plane)
+      if (cleanPath === "/v1/admin/sync_cache" && method === "POST") {
         const authHeader = request.headers.get("Authorization") || "";
         const adminSecret = authHeader.replace("Bearer ", "").trim();
         if (adminSecret !== env.ADMIN_KEY) {
           return errorResponse("Unauthorized Admin Access", 401);
         }
-        const { handleTopup } = await import("./routes/admin");
-        return handleTopup(request, env);
+        const { handleSyncCache } = await import("./routes/admin");
+        return handleSyncCache(request, env);
       }
 
       // 触发全局刷新的内部 API 端点 (Internal API to trigger global refresh)

@@ -14,6 +14,7 @@ import { SkillKeys } from "../utils/skill-keys.ts";
 
 /**
  * Handles POST /v1/admin/provision
+ * DEPRECATED: Use /v1/admin/sync_cache instead.
  * Called by a trusted backend (e.g. Vercel) to create a new UniSkill API key.
  */
 export async function handleProvision(request: Request, env: Env): Promise<Response> {
@@ -49,7 +50,7 @@ export async function handleProvision(request: Request, env: Env): Promise<Respo
     await env.UNISKILL_KV.put(SkillKeys.credits(userUid), String(initialCredits));
     await env.UNISKILL_KV.put(SkillKeys.tier(userUid), userTier);
 
-    // ── Step 6: 返回原始 Key（仅此一次）和元数据 ────────────
+    // ── Step 6: 返回结果 ────────────
     return new Response(
         JSON.stringify({
             success: true,
@@ -67,7 +68,73 @@ export async function handleProvision(request: Request, env: Env): Promise<Respo
 }
 
 /**
+ * Handles POST /v1/admin/sync_cache
+ * NEW: The single source of truth (Next.js/Supabase) pushes the final state to the gateway.
+ * Purpose: Update KV and In-Memory cache without touching the DB from the edge.
+ */
+export async function handleSyncCache(request: Request, env: Env): Promise<Response> {
+    
+    let userUid: string | undefined = undefined;
+    let totalCredits: number | undefined = undefined;
+    let newTier: string | undefined = undefined;
+    let keyHash: string | undefined = undefined;
+
+    try {
+        const body = await request.json() as any;
+        userUid = body.user_uid || body.uid;
+        // 支持多种命名方式，优先使用 total_credits
+        totalCredits = body.total_credits ?? body.new_credits ?? body.credits;
+        newTier = body.new_tier || body.tier;
+        keyHash = body.key_hash || body.hash;
+    } catch { /* ignore */ }
+
+    if (!userUid) {
+        return new Response(
+            JSON.stringify({ success: false, error: "Missing required field: user_uid" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+    }
+
+    // 1. 建立 Hash -> UID 的映射 (用于注册场景)
+    if (keyHash) {
+        await env.UNISKILL_KV.put(SkillKeys.userUid(keyHash), userUid);
+    }
+    
+    // 2. [幂等盲写] 更新积分 (Update KV Credits)
+    if (totalCredits !== undefined) {
+        await env.UNISKILL_KV.put(SkillKeys.credits(userUid), String(totalCredits));
+        setCache(`credits:${userUid}`, totalCredits); 
+    }
+    
+    // 3. [幂等盲写] 更新等级 (Update KV Tier)
+    if (newTier) {
+        const tierStr = newTier.toUpperCase();
+        await env.UNISKILL_KV.put(SkillKeys.tier(userUid), tierStr);
+        setCache(`tier:${userUid}`, tierStr);
+    }
+
+    console.log(`[Admin] Sync Cache successful for ${userUid}: TotalCredits=${totalCredits}, Tier=${newTier || "unchanged"}, HashSync=${!!keyHash}`);
+
+    return new Response(
+        JSON.stringify({
+            success: true,
+            user_uid: userUid,
+            synced: {
+                total_credits: totalCredits,
+                tier: newTier
+            },
+            _uniskill: {
+                request_id: request.headers.get("cf-ray") ?? crypto.randomUUID(),
+                version: GATEWAY_VERSION,
+            },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+}
+
+/**
  * Handles POST /v1/admin/topup
+ * DEPRECATED: Use /v1/admin/sync_cache instead.
  * Called when a purchase is successful to add credits and update tier.
  */
 export async function handleTopup(request: Request, env: Env): Promise<Response> {
@@ -103,7 +170,7 @@ export async function handleTopup(request: Request, env: Env): Promise<Response>
         setCache(`tier:${userUid}`, newTier); // 更新等级缓存 (Update tier cache)
     }
 
-    console.log(`[Admin] Top-up successful for ${userUid}: +${creditsToAdd} credits, New Balance: ${newBalance}, Tier: ${newTier || "unchanged"}`);
+    console.log(`[Admin] Top-up (Legacy) successful for ${userUid}: +${creditsToAdd} credits, New Balance: ${newBalance}, Tier: ${newTier || "unchanged"}`);
 
     return new Response(
         JSON.stringify({
