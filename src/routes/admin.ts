@@ -77,6 +77,7 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
     let userUid: string | undefined = undefined;
     let totalCredits: number | undefined = undefined;
     let newTier: string | undefined = undefined;
+    let oldKeyHash: string | undefined = undefined;
     let keyHash: string | undefined = undefined;
 
     try {
@@ -86,6 +87,7 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
         totalCredits = body.total_credits ?? body.new_credits ?? body.credits;
         newTier = body.new_tier || body.tier;
         keyHash = body.key_hash || body.hash;
+        oldKeyHash = body.old_key_hash || body.old_hash;
     } catch { /* ignore */ }
 
     if (!userUid) {
@@ -95,7 +97,13 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
         );
     }
 
-    // 1. 建立 Hash -> UID 的映射 (用于注册场景)
+    // 1. [物理销毁] 如果提供了旧 Hash，立即从 KV 中抹除映射
+    if (oldKeyHash) {
+        console.log(`[Admin] Revoking old key mapping: ${oldKeyHash}`);
+        await env.UNISKILL_KV.delete(SkillKeys.userUid(oldKeyHash));
+    }
+
+    // 2. [建立新映射] 建立 Hash -> UID 的映射 (用于注册或重置场景)
     if (keyHash) {
         await env.UNISKILL_KV.put(SkillKeys.userUid(keyHash), userUid);
     }
