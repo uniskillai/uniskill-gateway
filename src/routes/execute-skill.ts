@@ -5,7 +5,7 @@ import { hashKey } from "../utils/auth";
 import { SkillKeys } from "../utils/skill-keys";
 import { executeSkill } from "../engine/executor";
 import { errorResponse, corsHeaders, rateLimitResponse, successResponse } from "../utils/response";
-import { getCredits, deductCredit, getTier, getUserUid } from "../utils/billing";
+import { getProfile, deductCredit, getUserUid } from "../utils/billing";
 import { SkillParser } from "../engine/parser";
 import { formatters } from "../formatters/index";
 import { checkRateLimit } from "../rateLimit";
@@ -90,18 +90,18 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             return errorResponse(`Implementation config missing for skill [${normalizedSkillName}]`, 500);
         }
 
-        // ── Step 4: Rate Limit Check ──
+        // ── Step 4 & 5: Identity, Rate Limit & Billing Check ──
         const userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
-        const userTier = await getTier(env.UNISKILL_KV, userUid, env);
+        const profile = await getProfile(env.UNISKILL_KV, userUid, env, keyHash);
         
+        const userTier = profile.tier;
+        let currentCredits = profile.credits;
+
         const rlResult = await checkRateLimit(keyHash, userTier, env);
 
         if (!rlResult.isAllowed) {
             return rateLimitResponse(rlResult.limit, rlResult.remaining);
         }
-
-        // ── Step 5: Identity & Billing Check ──
-        let currentCredits = await getCredits(env.UNISKILL_KV, userUid, env, keyHash);
         
         if (currentCredits === -1) currentCredits = 0;
 

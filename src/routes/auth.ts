@@ -1,8 +1,5 @@
-// src/routes/auth.ts
-// Logic: Explicit route for verifying API keys from CLI / connect.sh scripts
-
 import { hashKey } from "../utils/auth";
-import { getCredits, getTier, getUserUid } from "../utils/billing";
+import { getProfile, getUserUid } from "../utils/billing";
 import { errorResponse, successResponse } from "../utils/response";
 import type { Env } from "../index";
 
@@ -25,15 +22,12 @@ export async function handleAuthVerify(request: Request, env: Env): Promise<Resp
         return errorResponse("Unauthorized: Key not found or inactive", 401);
     }
 
-    // 逻辑：在 KV 中查询该用户实时的额度
-    const credits = await getCredits(env.UNISKILL_KV, uid, env, keyHash);
-    
-    // 逻辑：返回用户的 Tier（等级）
-    const tier = await getTier(env.UNISKILL_KV, uid, env);
+    // 逻辑：从合并后的 Profile 中获取实时状态（只需一次 KV 读取）
+    const profile = await getProfile(env.UNISKILL_KV, uid, env, keyHash);
 
     return successResponse({
         valid: true,
-        credits: credits,
-        tier: tier
+        credits: profile.credits,
+        tier: profile.tier
     });
 }

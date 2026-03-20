@@ -19,19 +19,29 @@ export const SkillKeys = {
      */
     market: (name: string) => `skill:market:${name}`,
 
-    // Logic: Credit storage indexed by user_uid
-    // 逻辑：积分存储以 user_uid 作为唯一主键
+    // Logic: Unified user profile storage (Credits + Tier)
+    // 逻辑：统一的用户信息存储（包含积分和等级）
+    profile: (uid: string) => `user:profile:${uid}`,
+
+    // LEGACY: Old separate credit storage
+    // 废弃：旧的独立积分存储
     credits: (uid: string) => `user:credits:${uid}`,
 
     /**
-     * Logic: User tier information indexed by user_uid
-     * 逻辑：用户档位信息，以 user_uid 索引
+     * LEGACY: Old separate tier storage
+     * 废弃：旧的独立等级存储
      */
     tier: (uid: string) => `tier:${uid}`,
 
     /**
      * Logic: Stable user UID mapping indexed by key_hash
      * 逻辑：稳定的用户 UID 映射关系，以 key_hash 索引
+     */
+    authHash: (keyHash: string) => `auth:hash:${keyHash}`,
+
+    /**
+     * LEGACY: Old user UID mapping format
+     * 废弃：旧版用户 UID 映射格式
      */
     userUid: (keyHash: string) => `user:uid:${keyHash}`,
 

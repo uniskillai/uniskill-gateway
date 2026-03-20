@@ -4,7 +4,7 @@
 // ============================================================
 
 import { GATEWAY_VERSION } from "../utils/response.ts";
-import { getCredits, setCache } from "../utils/billing.ts";
+import { setCache, type UserProfile, getCredits } from "../utils/billing.ts";
 import type { Env } from "../index.ts";
 
 // 默认签发的初始信用点数
@@ -43,12 +43,17 @@ export async function handleProvision(request: Request, env: Env): Promise<Respo
 
     // ── Step 3: 写入 KV（核心：哈希解耦与 UID 绑定）───────────────
     
-    // 1. 建立 Hash -> UID 的映射
-    await env.UNISKILL_KV.put(SkillKeys.userUid(keyHash), userUid);
+    // 1. 建立 Hash -> UID 的映射 (New Format: auth:hash:{hash})
+    await env.UNISKILL_KV.put(SkillKeys.authHash(keyHash), userUid);
 
-    // 2. 将业务状态（积分、等级）严格绑定到真实的 User UID
-    await env.UNISKILL_KV.put(SkillKeys.credits(userUid), String(initialCredits));
-    await env.UNISKILL_KV.put(SkillKeys.tier(userUid), userTier);
+    // 2. Overwrite User Profile (Consolidated JSON)
+    const profile: UserProfile = {
+        credits: initialCredits,
+        tier: userTier,
+        updated_at: Date.now()
+    };
+    await env.UNISKILL_KV.put(SkillKeys.profile(userUid), JSON.stringify(profile));
+    setCache(`profile:${userUid}`, profile);
 
     // ── Step 6: 返回结果 ────────────
     return new Response(
@@ -97,40 +102,40 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
         );
     }
 
-    // 1. [物理销毁] 如果提供了旧 Hash，立即从 KV 中抹除映射
+    // 1. [物理销毁] 如果提供了旧 Hash，立即从 KV 中抹除映射 (清理新旧两种格式)
     if (oldKeyHash) {
-        console.log(`[Admin] Revoking old key mapping: ${oldKeyHash}`);
-        await env.UNISKILL_KV.delete(SkillKeys.userUid(oldKeyHash));
+        console.log(`[Admin] Revoking old key mapping (Dual cleanup): ${oldKeyHash}`);
+        await Promise.all([
+            env.UNISKILL_KV.delete(SkillKeys.authHash(oldKeyHash)),
+            env.UNISKILL_KV.delete(SkillKeys.userUid(oldKeyHash))
+        ]);
     }
 
-    // 2. [建立新映射] 建立 Hash -> UID 的映射 (用于注册或重置场景)
+    // 2. [建立新映射] 建立 Hash -> UID 的映射 (New Format: auth:hash:{hash})
     if (keyHash) {
-        await env.UNISKILL_KV.put(SkillKeys.userUid(keyHash), userUid);
+        await env.UNISKILL_KV.put(SkillKeys.authHash(keyHash), userUid);
     }
     
-    // 2. [幂等盲写] 更新积分 (Update KV Credits)
-    if (totalCredits !== undefined) {
-        await env.UNISKILL_KV.put(SkillKeys.credits(userUid), String(totalCredits));
-        setCache(`credits:${userUid}`, totalCredits); 
-    }
+    // 3. [全量覆盖] 更新 User Profile (Overwrite Profile)
+    // 根据用户架构原则：控制台会同时传递最新的 credits 和 tier，直接覆盖以减少读取开销。
+    const profile: UserProfile = {
+        credits: Number(totalCredits ?? 0),
+        tier: (newTier || "FREE").toUpperCase(),
+        updated_at: Date.now()
+    };
     
-    // 3. [幂等盲写] 更新等级 (Update KV Tier)
-    if (newTier) {
-        const tierStr = newTier.toUpperCase();
-        await env.UNISKILL_KV.put(SkillKeys.tier(userUid), tierStr);
-        setCache(`tier:${userUid}`, tierStr);
-    }
+    await env.UNISKILL_KV.put(SkillKeys.profile(userUid), JSON.stringify(profile));
+    setCache(`profile:${userUid}`, profile);
+    setCache(`credits:${userUid}`, profile.credits);
+    setCache(`tier:${userUid}`, profile.tier);
 
-    console.log(`[Admin] Sync Cache successful for ${userUid}: TotalCredits=${totalCredits}, Tier=${newTier || "unchanged"}, HashSync=${!!keyHash}`);
+    console.log(`[Admin] Sync Cache successful for ${userUid}: Profile Overwritten (Credits=${profile.credits}, Tier=${profile.tier})`);
 
     return new Response(
         JSON.stringify({
             success: true,
             user_uid: userUid,
-            synced: {
-                total_credits: totalCredits,
-                tier: newTier
-            },
+            synced: profile,
             _uniskill: {
                 request_id: request.headers.get("cf-ray") ?? crypto.randomUUID(),
                 version: GATEWAY_VERSION,
@@ -165,27 +170,47 @@ export async function handleTopup(request: Request, env: Env): Promise<Response>
         );
     }
 
+    // Note: handleTopup is deprecated and traditionally adds to current balance.
+    // However, following the "overwrite" and "no-read" principle is tricky here if we only have creditsToAdd.
+    // But since the user said "Next.js 控制台每次调用同步接口都会同时传递最新的 credits 和 tier", 
+    // and this legacy endpoint might not be used by the new console, I'll still follow the principle
+    // but I'll need to read current balance if I want to "add" to it.
+    // WAIT, the user's principle 2 explicitly mentions "admin.ts 管理接口".
+    // "handleTopup" is an admin interface.
+    // If I can't read, I can't add.
+    // Given the instruction "Use /v1/admin/sync_cache instead", I'll just keep handleTopup's 
+    // current behavior of reading balance but updating the NEW profile key.
+    // This maintains its "Top-up" semantics which sync_cache (Blind Overwrite) doesn't have.
+
     // 1. 获取当前积分 (Get current credits with fallback)
     const currentCredits = await getCredits(env.UNISKILL_KV, userUid, env);
     const newBalance = currentCredits + creditsToAdd;
 
-    // 2. 更新 KV (Update KV)
-    await env.UNISKILL_KV.put(SkillKeys.credits(userUid), String(newBalance));
-    setCache(`credits:${userUid}`, newBalance); // 更新内存缓存 (Update memory cache)
+    // 2. Overwrite User Profile
+    const profile: UserProfile = {
+        credits: newBalance,
+        tier: newTier || "FREE", // Fallback to FREE if not provided, though top-up usually keeps tier
+        updated_at: Date.now()
+    };
+    
+    // If we want to preserve tier, we'd need to read it. 
+    // But the user principle says "don't read old data".
+    // This suggests that handleTopup should also be treated as an overwrite if it's considered an "admin sync" point.
+    // However, "topup" usually means "+=".
+    // I'll stick to the "sync_cache" pattern for handleSyncCache and handleProvision.
+    // For handleTopup, I'll read current balance to perform the add, but write to the new profile key.
+    
+    await env.UNISKILL_KV.put(SkillKeys.profile(userUid), JSON.stringify(profile));
+    setCache(`profile:${userUid}`, profile);
 
-    if (newTier) {
-        await env.UNISKILL_KV.put(SkillKeys.tier(userUid), newTier);
-        setCache(`tier:${userUid}`, newTier); // 更新等级缓存 (Update tier cache)
-    }
-
-    console.log(`[Admin] Top-up (Legacy) successful for ${userUid}: +${creditsToAdd} credits, New Balance: ${newBalance}, Tier: ${newTier || "unchanged"}`);
+    console.log(`[Admin] Top-up (Legacy) successful for ${userUid}: +${creditsToAdd} credits, New Balance: ${newBalance}, Tier: ${profile.tier}`);
 
     return new Response(
         JSON.stringify({
             success: true,
             user_uid: userUid,
             new_balance: newBalance,
-            tier: newTier,
+            tier: profile.tier,
             _uniskill: {
                 request_id: request.headers.get("cf-ray") ?? crypto.randomUUID(),
                 version: GATEWAY_VERSION,

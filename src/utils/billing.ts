@@ -24,41 +24,82 @@ function getCache(key: string) {
     return null;
 }
 
-/**
- * Reads the current credit balance for a user from KV.
- * Logic: Two-stage fallback (UID -> Hash Migration -> DB)
- */
-export async function getCredits(kv: KVNamespace, uid: string, env: any, keyHash?: string): Promise<number> {
-    const cacheKey = `credits:${uid}`;
-    const cached = getCache(cacheKey);
-    if (cached !== null) return cached;
+export interface UserProfile {
+    credits: number;
+    tier: string;
+    updated_at: number;
+}
 
-    // 1. Try UID-based key (Stable)
-    let raw = await kv.get(SkillKeys.credits(uid));
-    
-    // 2. Automatic Migration: Try old Hash-based key if UID miss
-    if (raw === null && keyHash) {
-        raw = await kv.get(`user:credits:${keyHash}`); // Manual legacy lookup
-        if (raw !== null) {
-            console.log(`[Migration] Moving credits from hash to uid for ${uid}`);
-            await kv.put(SkillKeys.credits(uid), raw);
-            // Optionally delete old key later
+/**
+ * Reads the unified user profile from KV.
+ * Logic: Self-healing Migration (Profile -> Legacy Keys -> DB)
+ */
+export async function getProfile(kv: KVNamespace, uid: string, env: any, keyHash?: string): Promise<UserProfile> {
+    const cacheKey = `profile:${uid}`;
+    const cached = getCache(cacheKey);
+    if (cached) return cached;
+
+    // 1. Try the new unified profile key
+    let raw = await kv.get(SkillKeys.profile(uid));
+    if (raw) {
+        try {
+            const profile = JSON.parse(raw) as UserProfile;
+            setCache(cacheKey, profile);
+            return profile;
+        } catch (e) {
+            console.error(`[Billing] Failed to parse profile for ${uid}:`, e);
         }
     }
 
-    // 3. DB Fallback
-    if (raw === null) {
-        console.log(`[Billing] KV miss for credits (uid: ${uid}), hitting DB.`);
-        const userData = await fetchUserDataByUid(uid, env);
-        raw = String(userData.credits);
-        await kv.put(SkillKeys.credits(uid), raw, { expirationTtl: 86400 });
+    // 2. Self-healing Migration: Concurrent read legacy keys
+    console.log(`[Migration] Profile miss for ${uid}, starting self-healing...`);
+    const [oldCreditsVal, oldTier] = await Promise.all([
+        kv.get(SkillKeys.credits(uid)),
+        kv.get(SkillKeys.tier(uid))
+    ]);
+
+    let oldCredits = oldCreditsVal;
+    if (oldCredits === null && keyHash) {
+        // Even older: Try Hash-based key
+        oldCredits = await kv.get(`user:credits:${keyHash}`);
+        if (oldCredits !== null) {
+            console.log(`[Migration] Found very legacy hash-based credits for ${uid}`);
+        }
     }
 
-    const credits = parseFloat(raw);
-    const finalCredits = isNaN(credits) ? 0 : credits;
+    let profile: UserProfile;
+
+    if (oldCredits !== null || oldTier !== null) {
+        profile = {
+            credits: oldCredits ? parseFloat(oldCredits) : 0,
+            tier: oldTier || "FREE",
+            updated_at: Date.now()
+        };
+        console.log(`[Migration] Migrated legacy data to profile for ${uid}`);
+    } else {
+        // 3. Fallback to DB (Source of Truth)
+        console.log(`[Billing] KV miss for ${uid}, hitting DB.`);
+        const userData = await fetchUserDataByUid(uid, env);
+        profile = {
+            credits: userData.credits || 0,
+            tier: userData.tier || "FREE",
+            updated_at: Date.now()
+        };
+    }
+
+    // 4. Immediate Write-back (Self-healing)
+    await kv.put(SkillKeys.profile(uid), JSON.stringify(profile));
+    setCache(cacheKey, profile);
     
-    setCache(cacheKey, finalCredits);
-    return finalCredits;
+    return profile;
+}
+
+/**
+ * Reads the current credit balance for a user.
+ */
+export async function getCredits(kv: KVNamespace, uid: string, env: any, keyHash?: string): Promise<number> {
+    const profile = await getProfile(kv, uid, env, keyHash);
+    return profile.credits;
 }
 
 /**
@@ -70,21 +111,33 @@ export async function getUserUid(kv: KVNamespace, keyHash: string, env: any): Pr
     const cached = getCache(cacheKey);
     if (cached) return cached;
 
-    // 1. Try KV (Hash -> UID Mapping)
-    let uid = await kv.get(SkillKeys.userUid(keyHash));
+    // 1. Try New format: auth:hash:{hash}
+    let uid = await kv.get(SkillKeys.authHash(keyHash));
     if (uid) {
         setCache(cacheKey, uid);
         return uid;
     }
 
-    // 2. Fallback to Supabase (Source of Truth)
+    // 2. Self-healing Migration: Try Legacy format: user:uid:{hash}
+    uid = await kv.get(SkillKeys.userUid(keyHash));
+    if (uid) {
+        console.log(`[Migration] Moving auth hash mapping for ${keyHash.slice(-6)} to new format (Self-healing).`);
+        // Atomic self-healing: write new, delete old
+        await kv.put(SkillKeys.authHash(keyHash), uid, { expirationTtl: 86400 * 30 });
+        await kv.delete(SkillKeys.userUid(keyHash));
+        
+        setCache(cacheKey, uid);
+        return uid;
+    }
+
+    // 3. Fallback to Supabase (Source of Truth)
     console.log(`[Identity] KV miss for UID map (hash: ...${keyHash.slice(-6)}), hitting DB.`);
     const userData = await fetchUserDataFromDB(keyHash, env);
     uid = userData.user_uid;
 
-    // 3. Write-back to KV for future requests
+    // 4. Write-back to KV for future requests (New format)
     if (uid && uid !== "anonymous") {
-        await kv.put(SkillKeys.userUid(keyHash), uid, { expirationTtl: 86400 * 30 }); // Mapping is long-lived
+        await kv.put(SkillKeys.authHash(keyHash), uid, { expirationTtl: 86400 * 30 }); // Mapping is long-lived
         setCache(cacheKey, uid);
     }
 
@@ -92,23 +145,11 @@ export async function getUserUid(kv: KVNamespace, keyHash: string, env: any): Pr
 }
 
 /**
- * Reads the current subscription tier for a user from KV.
+ * Reads the current subscription tier for a user.
  */
 export async function getTier(kv: KVNamespace, uid: string, env: any): Promise<string> {
-    const cacheKey = `tier:${uid}`;
-    const cached = getCache(cacheKey);
-    if (cached) return cached;
-
-    let raw = await kv.get(SkillKeys.tier(uid));
-
-    if (raw === null) {
-        const userData = await fetchUserDataByUid(uid, env);
-        raw = userData.tier || "FREE";
-        await kv.put(SkillKeys.tier(uid), raw, { expirationTtl: 86400 });
-    }
-
-    setCache(cacheKey, raw);
-    return raw;
+    const profile = await getProfile(kv, uid, env);
+    return profile.tier;
 }
 
 /**
@@ -151,19 +192,24 @@ export async function deductCredit(
     webhookUrl?: string,
     adminKey?: string,
     _skillName = "unknown",
-    keyHash?: string // Required for DB sync if webhook relies on it
+    keyHash?: string 
 ): Promise<void> {
     const newBalance = Math.round((currentCredits - creditsPerCall) * 100) / 100;
 
-    // Step 1: 写回 KV（使用稳定 UID Key）
-    await kv.put(SkillKeys.credits(uid), String(newBalance));
+    // Step 1: Read existing profile to preserve Tier
+    const profile = await getProfile(kv, uid, {}); // Env not strictly needed if cached, but good practice
+    profile.credits = newBalance;
+    profile.updated_at = Date.now();
+
+    // Step 2: Write back the consolidated JSON
+    await kv.put(SkillKeys.profile(uid), JSON.stringify(profile));
     
     // Refresh In-Memory Cache
-    setCache(`credits:${uid}`, newBalance);
+    setCache(`profile:${uid}`, profile);
+    setCache(`credits:${uid}`, newBalance); // Backwards compatibility for raw cache lookups if any
 
-    // Step 2: 异步回写 Supabase (使用 Hash 以匹配现有 Web 端逻辑)
+    // Step 3: Async write-back to Supabase
     if (webhookUrl && adminKey && keyHash) {
-        // Only sync balance to prevent duplicate credit_events (handled by recordSkillCall RPC)
         await syncToSupabase(webhookUrl, adminKey, keyHash, newBalance);
     }
 }
