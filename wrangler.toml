@@ -57,3 +57,15 @@ vars = { ENVIRONMENT = "staging", ENABLE_M2M_PAYMENTS = "true", TEST_WALLET_ADDR
 [[env.staging.kv_namespaces]]
 binding = "UNISKILL_KV"
 id = "9f388e510ffc426c8320f839ae769fe3"
+
+# ── Durable Objects Configuration ───────────────────────────
+# Logic: Registers the MCPSession class and binds it to MCP_SESSION
+# 逻辑：注册 MCPSession 类并将其绑定到 MCP_SESSION 变量
+[durable_objects]
+bindings = [
+  { name = "MCP_SESSION", class_name = "MCPSession" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MCPSession"]

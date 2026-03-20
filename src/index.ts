@@ -5,11 +5,11 @@
 import { hashKey } from "./utils/auth";
 import { SkillKeys } from "./utils/skill-keys";
 import { handleProvision } from "./routes/admin";
-import { handleMCPSse, handleMCPMessages } from "./routes/mcp-server";
 import { handleExecuteSkill } from "./routes/execute-skill";
 import { handleAuthVerify } from "./routes/auth";
 import { errorResponse, corsHeaders, successResponse } from "./utils/response";
 import { SkillParser } from "./engine/parser";
+export { MCPSession } from "./durable_objects/MCPSession";
 
 // ── 环境变量类型声明 ──────────────────────────────────────────
 export interface Env {
@@ -25,6 +25,7 @@ export interface Env {
   INTERNAL_API_SECRET: string;
   TEST_WALLET_ADDRESS?: string;
   GITHUB_TOKEN?: string;
+  MCP_SESSION: DurableObjectNamespace;
 }
 
 export default {
@@ -213,14 +214,30 @@ export default {
           return new Response("Global tool refresh triggered successfully!", { status: 200 });
       }
 
-      // 路由：MCP SSE 握手端点 (Agent 的第一步)
+      // 路由：MCP SSE 握手端点 (Logic: Create a new stateful DO instance)
       if (cleanPath === "/v1/mcp/sse" && method === "GET") {
-        return handleMCPSse(request, env, ctx);
+        const id = env.MCP_SESSION.newUniqueId();
+        const stub = env.MCP_SESSION.get(id);
+        
+        // 透传请求给 DO，DO 会在内存中维护这个连接 (Proxy to DO)
+        const response = await stub.fetch(request);
+        return response;
       }
 
-      // 路由：MCP 消息接收端点 (Agent 的第二步)
+      // 路由：MCP 消息接收端点 (Logic: Route to existing DO via session_id)
       if (cleanPath === "/v1/mcp/messages" && method === "POST") {
-        return handleMCPMessages(request, env);
+        const sessionId = url.searchParams.get("session_id");
+        if (!sessionId) {
+          return errorResponse("Missing session_id in URL", 400);
+        }
+
+        try {
+          const doId = env.MCP_SESSION.idFromString(sessionId);
+          const stub = env.MCP_SESSION.get(doId);
+          return await stub.fetch(request);
+        } catch (e) {
+          return errorResponse("Invalid session_id", 400);
+        }
       }
 
       // 路由：天气查询服务 — 走 handleExecuteSkill 以保证鉴权 + 计费
