@@ -113,12 +113,12 @@ const FALLBACK_TOOLS = [
 ];
 
 export class MCPSession {
-  private state: DurableObjectState;
+  private ctx: DurableObjectState;
   private env: any; // Will be properly typed
   private controller: ReadableStreamDefaultController | null = null;
 
-  constructor(state: DurableObjectState, env: any) {
-    this.state = state;
+  constructor(ctx: DurableObjectState, env: any) {
+    this.ctx = ctx;
     this.env = env;
   }
 
@@ -133,7 +133,7 @@ export class MCPSession {
           
           // 发送初始 endpoint 事件，告知客户端后续消息应 POST 到本 DO 实例
           // (Logic: Notify client of the stateful POST endpoint tied to this DO instance)
-          const postEndpoint = `/v1/mcp/messages?session_id=${this.state.id.toString()}`;
+          const postEndpoint = `/v1/mcp/messages?session_id=${this.ctx.id.toString()}`;
           const initMessage = `event: endpoint\ndata: ${postEndpoint}\n\n`;
           controller.enqueue(new TextEncoder().encode(initMessage));
         },
@@ -237,7 +237,7 @@ export class MCPSession {
                 })
             });
 
-            const response = await handleExecuteSkill(internalRequest, this.env, {} as any); // Context can be empty
+            const response = await handleExecuteSkill(internalRequest, this.env, this.ctx as any); 
             
             if (!response.ok) {
                 finalOutput = `[Error] Gateway rejected the request with status: ${response.status}. Message: ${await response.text()}`;
