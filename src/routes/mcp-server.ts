@@ -130,7 +130,7 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
         async start(controller) {
             console.log(`[MCP] 🔗 SSE Connection opened: ${sessionId}`);
 
-            const postEndpoint = `/v1/mcp/message?sessionId=${sessionId}`;
+            const postEndpoint = `/v1/mcp/messages?sessionId=${sessionId}`;
             const initMessage = `event: endpoint\ndata: ${postEndpoint}\n\n`;
             controller.enqueue(encoder.encode(initMessage));
 
@@ -289,7 +289,7 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
 // ============================================================================
 // 🔴 通道 2: 指令接收端点 (POST)
 // ============================================================================
-export async function handleMCPMessage(request: Request, env: Env): Promise<Response> {
+export async function handleMCPMessages(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const sessionId = url.searchParams.get("sessionId");
 

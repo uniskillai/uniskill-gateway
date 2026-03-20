@@ -5,7 +5,7 @@
 import { hashKey } from "./utils/auth";
 import { SkillKeys } from "./utils/skill-keys";
 import { handleProvision } from "./routes/admin";
-import { handleMCPSse, handleMCPMessage } from "./routes/mcp-server";
+import { handleMCPSse, handleMCPMessages } from "./routes/mcp-server";
 import { handleExecuteSkill } from "./routes/execute-skill";
 import { handleAuthVerify } from "./routes/auth";
 import { errorResponse, corsHeaders, successResponse } from "./utils/response";
@@ -219,8 +219,8 @@ export default {
       }
 
       // 路由：MCP 消息接收端点 (Agent 的第二步)
-      if (cleanPath === "/v1/mcp/message" && method === "POST") {
-        return handleMCPMessage(request, env);
+      if (cleanPath === "/v1/mcp/messages" && method === "POST") {
+        return handleMCPMessages(request, env);
       }
 
       // 路由：天气查询服务 — 走 handleExecuteSkill 以保证鉴权 + 计费
