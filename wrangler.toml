@@ -68,4 +68,4 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["MCPSession"]
+new_sqlite_classes = ["MCPSession"]
