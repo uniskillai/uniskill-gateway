@@ -174,11 +174,12 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
                     if (payloadStr) {
                         const payload = JSON.parse(payloadStr);
                         const { id, method, params } = payload;
-                        let result: any = {};
+                        
+                        try {
+                            let result: any = {};
 
-                        // --- 🛠️ 业务逻辑执行区 (Business Logic Execution) ---
-                        if (method === "tools/list") {
-                            try {
+                            // --- 🛠️ 业务逻辑执行区 (Business Logic Execution) ---
+                            if (method === "tools/list") {
                                 // 极致性能优化：O(1) 预编译缓存读取，将 14s 延迟降至 50ms!
                                 const cachedToolsStr = await env.UNISKILL_KV.get("mcp_registry:tools_cache");
 
@@ -190,82 +191,93 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
                                     console.warn("[MCP] ⚠️ Cache MISS: 'mcp_registry:tools_cache' not found. Using FALLBACK_TOOLS.");
                                     result = { tools: FALLBACK_TOOLS };
                                 }
-                            } catch (err) {
-                                console.error("[MCP] ❌ Critical error reading tools cache:", err);
-                                result = { tools: FALLBACK_TOOLS };
                             }
-                        }
-                        else if (method === "tools/call") {
-                            const toolName = params.name;
-                            const toolArguments = params.arguments;
+                            else if (method === "tools/call") {
+                                const toolName = params.name;
+                                const toolArguments = params.arguments;
 
-                            const msgAuth = payload.authHeader;
-                            const handshakeAuth = request.headers.get("Authorization") || "";
-                            const authHeader = msgAuth || handshakeAuth;
+                                const msgAuth = payload.authHeader;
+                                const handshakeAuth = request.headers.get("Authorization") || "";
+                                const authHeader = msgAuth || handshakeAuth;
 
-                            let finalOutput = "";
-                            try {
-                                const executeUrl = new URL(request.url);
-                                executeUrl.pathname = `/v1/execute`;
+                                let finalOutput = "";
+                                try {
+                                    const executeUrl = new URL(request.url);
+                                    executeUrl.pathname = `/v1/execute`;
 
-                                const internalRequest = new Request(executeUrl.toString(), {
-                                    method: "POST",
-                                    headers: {
-                                        "Authorization": authHeader,
-                                        "Content-Type": "application/json"
-                                    },
-                                    body: JSON.stringify({
-                                        skill: toolName,
-                                        params: toolArguments || {}
-                                    })
-                                });
+                                    const internalRequest = new Request(executeUrl.toString(), {
+                                        method: "POST",
+                                        headers: {
+                                            "Authorization": authHeader,
+                                            "Content-Type": "application/json"
+                                        },
+                                        body: JSON.stringify({
+                                            skill: toolName,
+                                            params: toolArguments || {}
+                                        })
+                                    });
 
-                                const response = await handleExecuteSkill(internalRequest, env, ctx);
-                                
-                                if (!response.ok) {
-                                    finalOutput = `[Error] Gateway rejected the request with status: ${response.status}. Message: ${await response.text()}`;
-                                } else {
-                                    const resultRaw = await response.text();
-                                    try {
-                                        const parsed = JSON.parse(resultRaw);
-                                        finalOutput = formatToolResponse(parsed);
-                                    } catch {
-                                        finalOutput = formatToolResponse(resultRaw);
+                                    const response = await handleExecuteSkill(internalRequest, env, ctx);
+                                    
+                                    if (!response.ok) {
+                                        finalOutput = `[Error] Gateway rejected the request with status: ${response.status}. Message: ${await response.text()}`;
+                                    } else {
+                                        const resultRaw = await response.text();
+                                        try {
+                                            const parsed = JSON.parse(resultRaw);
+                                            finalOutput = formatToolResponse(parsed);
+                                        } catch {
+                                            finalOutput = formatToolResponse(resultRaw);
+                                        }
                                     }
+                                } catch (apiError: any) {
+                                    finalOutput = `[Tool Execution Failed] Upstream API Error: ${apiError.message || "Unknown error"}`;
                                 }
-                            } catch (apiError: any) {
-                                finalOutput = `[Tool Execution Failed] Upstream API Error: ${apiError.message || "Unknown error"}`;
+
+                                result = {
+                                    content: [{ type: "text", text: finalOutput }]
+                                };
+                            }
+                            else if (method === "initialize") {
+                                // 🚀 核心三：必须在此向客户端声明支持热更新！(Declare listChanged capability)
+                                result = {
+                                    protocolVersion: "2024-11-05",
+                                    capabilities: {
+                                        tools: {
+                                            listChanged: true // 告诉 Agent：我有热更新能力！
+                                        }
+                                    },
+                                    serverInfo: { name: "UniSkill-Gateway", version: "2.0.0" }
+                                };
                             }
 
-                            result = {
-                                content: [{ type: "text", text: finalOutput }]
-                            };
-                        }
-                        else if (method === "initialize") {
-                            // 🚀 核心三：必须在此向客户端声明支持热更新！(Declare listChanged capability)
-                            result = {
-                                protocolVersion: "2024-11-05",
-                                capabilities: {
-                                    tools: {
-                                        listChanged: true // 告诉 Agent：我有热更新能力！
-                                    }
-                                },
-                                serverInfo: { name: "UniSkill-Gateway", version: "2.0.0" }
-                            };
-                        }
-
-                        // 把执行结果顺着 SSE 流推给 Agent
-                        if (id !== undefined) {
-                            const responsePayload = { jsonrpc: "2.0", id: id, result: result };
-                            const sseMessage = `event: message\ndata: ${JSON.stringify(responsePayload)}\n\n`;
-                            controller.enqueue(encoder.encode(sseMessage));
+                            // 把执行结果顺着 SSE 流推给 Agent
+                            if (id !== undefined) {
+                                const responsePayload = { jsonrpc: "2.0", id: id, result: result };
+                                const sseMessage = `event: message\ndata: ${JSON.stringify(responsePayload)}\n\n`;
+                                controller.enqueue(encoder.encode(sseMessage));
+                            }
+                        } catch (innerError: any) {
+                            console.error(`[MCP] Error processing message ${id}:`, innerError);
+                            if (id !== undefined) {
+                                const errorPayload = { 
+                                    jsonrpc: "2.0", 
+                                    id: id, 
+                                    error: { 
+                                        code: -32603, 
+                                        message: "Internal Error: " + (innerError.message || "Unknown error") 
+                                    } 
+                                };
+                                const sseMessage = `event: message\ndata: ${JSON.stringify(errorPayload)}\n\n`;
+                                controller.enqueue(encoder.encode(sseMessage));
+                            }
                         }
 
                         // 阅后即焚
                         await env.UNISKILL_KV.delete(msgKey);
                     }
                 } catch (e: any) {
-                    console.error("SSE Polling error:", e);
+                    console.error("SSE Loop error:", e);
                 }
 
                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -290,26 +302,44 @@ export async function handleMCPSse(request: Request, env: Env, ctx: ExecutionCon
 // 🔴 通道 2: 指令接收端点 (POST)
 // ============================================================================
 export async function handleMCPMessages(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-    const sessionId = url.searchParams.get("sessionId");
-
-    if (!sessionId) {
-        return errorResponse("Missing sessionId.", 400);
-    }
-
-    let payload: any;
+    let incomingPayload: any;
     try {
-        payload = await request.json();
-    } catch {
-        return errorResponse("Invalid JSON-RPC payload.", 400);
+        const url = new URL(request.url);
+        const sessionId = url.searchParams.get("sessionId");
+
+        if (!sessionId) {
+            return errorResponse("Missing sessionId.", 400);
+        }
+
+        try {
+            incomingPayload = await request.clone().json();
+        } catch {
+            return errorResponse("Invalid JSON payload.", 400);
+        }
+
+        console.log(`[MCP] ✍️ POST received, writing to KV Broker for session ${sessionId}`);
+
+        const authHeader = request.headers.get("Authorization");
+        const brokerPayload = { ...incomingPayload, authHeader };
+
+        await env.UNISKILL_KV.put(`mcp_msg:${sessionId}`, JSON.stringify(brokerPayload), { expirationTtl: 300 });
+
+        return new Response("Accepted", { status: 202 });
+
+    } catch (error: any) {
+        console.error("[MCP] Critical error in handleMCPMessages:", error);
+
+        // 斩断卡死：强制返回标准的 JSON-RPC 错误响应
+        return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: incomingPayload?.id || null,
+            error: {
+                code: -32603,
+                message: "Internal Error: " + error.message
+            }
+        }), {
+            status: 200, // JSON-RPC 错误通常返回 200，错误信息在 Body 中
+            headers: { "Content-Type": "application/json" }
+        });
     }
-
-    console.log(`[MCP] ✍️ POST received, writing to KV Broker for session ${sessionId}`);
-
-    const authHeader = request.headers.get("Authorization");
-    const brokerPayload = { ...payload, authHeader };
-
-    await env.UNISKILL_KV.put(`mcp_msg:${sessionId}`, JSON.stringify(brokerPayload), { expirationTtl: 300 });
-
-    return new Response("Accepted", { status: 202 });
 }
