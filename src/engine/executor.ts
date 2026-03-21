@@ -15,13 +15,14 @@ export interface Env {
 }
 
 export async function executeSkill(impl: any, params: any, env: Env) {
-    if (!impl.endpoint) {
-        return JSON.stringify({ error: "Missing endpoint in skill implementation." });
-    }
-
     // ── Pre-process: Variable Substitution in Endpoint ──
     // 逻辑：将 endpoint 中的 {{key|default}} 占位符替换为 params 中的实际值
-    let targetUrl = impl.endpoint;
+    let targetUrl = impl.endpoint || impl.url;
+    
+    if (!targetUrl) {
+        return JSON.stringify({ error: "Missing endpoint or url in skill implementation." });
+    }
+
     const consumedParams = new Set<string>();
 
     const placeholderRegex = /\{\{([a-zA-Z0-9_-]+)(?:\|([^}]+))?\}\}/g;
@@ -109,10 +110,44 @@ export async function executeSkill(impl: any, params: any, env: Env) {
             throw new Error(errorMessage);
         }
 
-        return await response.json();
+        const rawData = await response.json();
+        
+        // ── Step 3: Response Mapping ──
+        // 逻辑：执行轻量级字段映射，减少下游 Token 消耗
+        if (impl.response_mapping && typeof impl.response_mapping === 'object') {
+            const mappedData: Record<string, any> = {};
+            let hasMapping = false;
+
+            for (const [k, v] of Object.entries(impl.response_mapping)) {
+                if (v && typeof v === 'string') {
+                    const extracted = evaluateJsonPath(rawData, v);
+                    mappedData[k] = extracted;
+                    hasMapping = true;
+                }
+            }
+            return hasMapping ? mappedData : rawData;
+        }
+
+        return rawData;
 
     } catch (error: any) {
         console.error(`[Executor] Error: ${error.message}`);
         throw error;
     }
+}
+
+/**
+ * 🌟 轻量级 JSON 寻址引擎 (Lightweight jq-style path evaluator)
+ * 例如把 '.current_condition[0].temp_C' 转化为 obj['current_condition'][0]['temp_C']
+ */
+function evaluateJsonPath(obj: any, path: string) {
+    if (!path) return undefined;
+    const cleanPath = path.trim().startsWith('.') ? path.trim().slice(1) : path.trim();
+    const parts = cleanPath.split(/[\.\[\]]+/).filter(Boolean);
+    let current = obj;
+    for (const part of parts) {
+        if (current === undefined || current === null) return undefined;
+        current = current[part];
+    }
+    return current;
 }

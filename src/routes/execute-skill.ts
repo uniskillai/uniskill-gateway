@@ -56,63 +56,91 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     
     // If not in path, check the body (required for /v1/execute)
     if (!skillName) {
-        skillName = body.skill_name || body.skillName || body.skill;
-    }
-
-    if (!skillName) {
         return errorResponse("Missing skill_name", 400);
     }
 
     const normalizedSkillName = skillName.startsWith("uniskill_") ? skillName : `uniskill_${skillName}`;
-    const isHardcodedNative = HARDCODED_NATIVE_SKILLS.has(normalizedSkillName);
-
     const params = body.params || body;
 
     try {
-        // ── Step 3: Skill Configuration Lookup (Mandatory KV Lookup) ──
-        // Logic: All skills must be registered in KV (synced from Registry).
-        let skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(normalizedSkillName));
-        
-        if (!skillRaw) {
-            return errorResponse(`Skill [${normalizedSkillName}] is not registered in the system registry.`, 400);
-        }
-
-        // 3b. Parse the dynamic configuration
-        const spec = SkillParser.parse(skillRaw);
-        const unified = JSON.parse(skillRaw);
-        
-        const implementation = spec.implementation || (spec as any).config || unified.config;
-        const creditsPerCall = Number(unified.credits_per_call ?? unified.meta?.cost ?? unified.cost_per_call ?? 1);
-        const displayName = unified.display_name || unified.meta?.display_name || normalizedSkillName;
-        const tags = unified.tags || unified.meta?.tags || [];
-
-        if (!implementation && !isHardcodedNative) {
-            return errorResponse(`Implementation config missing for skill [${normalizedSkillName}]`, 500);
-        }
-
-        // ── Step 4 & 5: Identity, Rate Limit & Billing Check ──
+        // ── Step 3: Identity & Billing Resolve ──
+        // 逻辑：先锁定用户 UID，因为私有技能查找强依赖 UID
         const userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
         const profile = await getProfile(env.UNISKILL_KV, userUid, env, keyHash);
         
         const userTier = profile.tier;
         let currentCredits = profile.credits;
 
-        const rlResult = await checkRateLimit(keyHash, userTier, env);
+        // ── Step 4: Skill Configuration Lookup (Multi-Namespace) ──
+        // 逻辑：优先级 Private > Official > Market
+        let skillRaw: string | null = null;
+        let finalSkillName = normalizedSkillName;
+        let isPrivate = false;
+        
+        // 4a. Try Private
+        if (userUid) {
+            const pKeyRaw = SkillKeys.private(userUid, skillName);
+            const pKeyNorm = SkillKeys.private(userUid, normalizedSkillName);
+            skillRaw = await env.UNISKILL_KV.get(pKeyRaw) || await env.UNISKILL_KV.get(pKeyNorm);
+            if (skillRaw) {
+                finalSkillName = skillName;
+                isPrivate = true;
+                console.log(`[DEBUG] Found PRIVATE skill: ${skillName} for user ${userUid}`);
+            }
+        }
 
+        // 4b. Try Official
+        if (!skillRaw) {
+            skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(normalizedSkillName));
+            finalSkillName = normalizedSkillName;
+            if (skillRaw) console.log(`[DEBUG] Found OFFICIAL skill: ${normalizedSkillName}`);
+        }
+
+        // 4c. Try Market
+        if (!skillRaw) {
+            skillRaw = await env.UNISKILL_KV.get(SkillKeys.market(normalizedSkillName));
+            finalSkillName = normalizedSkillName;
+            if (skillRaw) console.log(`[DEBUG] Found MARKET skill: ${normalizedSkillName}`);
+        }
+
+        if (!skillRaw) {
+            console.error(`[DEBUG] Skill NOT FOUND in any registry: ${skillName}`);
+            return errorResponse(`Skill [${skillName}] is not registered in any accessible registry.`, 400);
+        }
+
+        // ── Step 5: Parse & Verify ──
+        const spec = SkillParser.parse(skillRaw);
+        const unified = JSON.parse(skillRaw);
+        
+        const implementation = spec.implementation || (spec as any).config || unified.config;
+        const creditsPerCall = Number(unified.credits_per_call ?? unified.meta?.cost ?? unified.cost_per_call ?? 1);
+        const displayName = unified.display_name || unified.meta?.display_name || finalSkillName;
+        const tags = unified.tags || unified.meta?.tags || [];
+
+        // 重新判断是否强制路由至原生 Handler (Only if it's truly an Official/Native skill)
+        // 🌟 核心修复：如果是私有技能，强制 bypass 官方硬编码逻辑
+        const isActuallyHardcoded = !isPrivate && 
+                                   HARDCODED_NATIVE_SKILLS.has(finalSkillName) && 
+                                   (unified.source === 'official' || !unified.source);
+
+        if (!implementation && !isActuallyHardcoded) {
+            return errorResponse(`Implementation config missing for skill [${finalSkillName}]`, 500);
+        }
+
+        // ── Step 6: Rate Limit & Credits Check ──
+        const rlResult = await checkRateLimit(keyHash, userTier, env);
         if (!rlResult.isAllowed) {
             return rateLimitResponse(rlResult.limit, rlResult.remaining);
         }
         
         if (currentCredits === -1) currentCredits = 0;
-
         if (currentCredits < creditsPerCall) {
             return errorResponse(`Insufficient Credits. This skill costs ${creditsPerCall}, but you have ${currentCredits}.`, 402);
         }
 
-        // ── Step 6: Execution (Native Handler or Generic Executor) ──
+        // ── Step 7: Execution ──
         let finalData: any;
-
-        if (isHardcodedNative) {
+        if (isActuallyHardcoded) {
             const syntheticRequest = new Request(request.url, {
                 method: "POST",
                 headers: request.headers,
@@ -193,7 +221,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
                 creditsPerCall,
                 env.VERCEL_WEBHOOK_URL,
                 env.ADMIN_KEY,
-                normalizedSkillName,
+                finalSkillName,
                 keyHash
             ));
         }
@@ -206,7 +234,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         ctx.waitUntil(recordSkillCall(
             env, 
             userUid, 
-            normalizedSkillName, 
+            finalSkillName, 
             requestId, 
             creditsPerCall, 
             "credits", 

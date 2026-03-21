@@ -107,21 +107,41 @@ export default {
 
       // 路由：Export All Skills as OpenAI JSON Schema (Dynamic Discovery)
       if (method === "GET" && cleanPath === "/v1/skills/schema") {
-        const list = await env.UNISKILL_KV.list({ prefix: "skill:official:" });
-        const schemas = [];
+        const authHeader = request.headers.get("Authorization") || "";
+        const rawKey = authHeader.replace("Bearer ", "").trim();
+        let userUid: string | undefined = undefined;
 
-        for (const key of list.keys) {
-          const raw = await env.UNISKILL_KV.get(key.name);
-          if (raw) {
-            try {
-              const skill = JSON.parse(raw);
-              schemas.push({
-                name: skill.id,
-                description: skill.meta?.description || skill.docs?.short || "No description",
-                parameters: skill.meta?.parameters || { type: "object", properties: {} }
-              });
-            } catch (e) {
-              console.error(`Failed to parse skill for schema export: ${key.name}`, e);
+        if (rawKey.startsWith("us-")) {
+          const keyHash = await hashKey(rawKey);
+          const { getUserUid } = await import("./utils/billing");
+          userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
+        }
+
+        const scanCategories = [
+          { prefix: "skill:official:", source: "official" }
+        ];
+
+        if (userUid && userUid !== "anonymous") {
+          scanCategories.unshift({ prefix: `skill:private:${userUid}:`, source: "private" });
+        }
+
+        const schemas: any[] = [];
+        for (const cat of scanCategories) {
+          const list = await env.UNISKILL_KV.list({ prefix: cat.prefix });
+          for (const key of list.keys) {
+            const raw = await env.UNISKILL_KV.get(key.name);
+            if (raw) {
+              try {
+                const skill = JSON.parse(raw);
+                schemas.push({
+                  // ID 用作函数名，Meta 用作描述
+                  name: skill.id || key.name.split(':').pop(),
+                  description: skill.meta?.description || skill.docs?.short || "No description",
+                  parameters: skill.meta?.parameters || skill.config?.parameters || { type: "object", properties: {} }
+                });
+              } catch (e) {
+                console.error(`Failed to parse skill for schema export: ${key.name}`, e);
+              }
             }
           }
         }

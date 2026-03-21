@@ -210,6 +210,6 @@ export async function deductCredit(
 
     // Step 3: Async write-back to Supabase
     if (webhookUrl && adminKey && keyHash) {
-        await syncToSupabase(webhookUrl, adminKey, keyHash, newBalance);
+        await syncToSupabase(webhookUrl, adminKey, keyHash, newBalance, _skillName, creditsPerCall);
     }
 }
