@@ -206,11 +206,56 @@ export class MCPSession {
     if (method === "tools/list") {
         try {
             const cachedToolsStr = await this.env.UNISKILL_KV.get("mcp_registry:tools_cache");
+            let allTools: any[] = [];
             if (cachedToolsStr) {
-                result = { tools: JSON.parse(cachedToolsStr) };
-            } else {
-                result = { tools: FALLBACK_TOOLS };
+                try { allTools = JSON.parse(cachedToolsStr); } catch { }
             }
+            // 基础公共工具 = 全局缓存 + fallback
+            allTools = [...allTools, ...FALLBACK_TOOLS];
+
+            // --- Access-Aware Discovery (Private Layer) ---
+            const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || "";
+            const rawKey = authHeader.replace("Bearer ", "").trim();
+            if (rawKey.startsWith("us-")) {
+                const { hashKey } = await import("../utils/auth");
+                const keyHash = await hashKey(rawKey);
+                const { getUserUid } = await import("../utils/billing");
+                const userUid = await getUserUid(this.env.UNISKILL_KV, keyHash, this.env);
+
+                if (userUid) {
+                    const list = await this.env.UNISKILL_KV.list({ prefix: `skill:private:${userUid}:` });
+                    const fetchPromises = list.keys.map(async (key: any) => {
+                        const raw = await this.env.UNISKILL_KV.get(key.name);
+                        if (raw) {
+                            try {
+                                const tool = JSON.parse(raw);
+                                return {
+                                    name: tool.id || key.name.split(':').pop(),
+                                    description: tool.meta?.description || tool.description || "Private tool",
+                                    inputSchema: tool.meta?.parameters || { type: "object", properties: {} }
+                                };
+                            } catch (e) { return null; }
+                        }
+                        return null;
+                    });
+                    const privateTools = (await Promise.all(fetchPromises)).filter(Boolean);
+                    
+                    // Merge unique tools (Private tools hide public ones with same name if overridden)
+                    const existingNames = new Set(allTools.map(t => t.name));
+                    for (const pt of privateTools) {
+                        if (!existingNames.has((pt as any).name)) {
+                            allTools.push(pt);
+                            existingNames.add((pt as any).name);
+                        } else {
+                            // Find and replace with private tool
+                            const index = allTools.findIndex(t => t.name === (pt as any).name);
+                            if (index !== -1) allTools[index] = pt;
+                        }
+                    }
+                }
+            }
+
+            result = { tools: allTools };
         } catch (err) {
             result = { tools: FALLBACK_TOOLS };
         }

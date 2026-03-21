@@ -200,6 +200,18 @@ export default {
         return handleSyncCache(request, env);
       }
 
+      // 路由：Admin Sync Skill (Push mode from Control Plane Finalize)
+      if (cleanPath === "/v1/admin/sync_skill" && method === "POST") {
+        const authHeader = request.headers.get("Authorization") || "";
+        const adminSecret = authHeader.replace("Bearer ", "").trim();
+        // Allow INTERNAL_API_SECRET as fallback for skill syncing
+        if (adminSecret !== env.ADMIN_KEY && adminSecret !== env.INTERNAL_API_SECRET) {
+          return errorResponse("Unauthorized Admin Access", 401);
+        }
+        const { handleSyncSkill } = await import("./routes/admin");
+        return handleSyncSkill(request, env);
+      }
+
       // 触发全局刷新的内部 API 端点 (Internal API to trigger global refresh)
       if (cleanPath === "/v1/admin/refresh-tools" && method === "POST") {
           // 只有您知道的超级密码 (Your secret admin token)

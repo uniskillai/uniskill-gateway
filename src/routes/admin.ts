@@ -84,6 +84,7 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
     let newTier: string | undefined = undefined;
     let oldKeyHash: string | undefined = undefined;
     let keyHash: string | undefined = undefined;
+    let type: string | undefined = undefined;
 
     try {
         const body = await request.json() as any;
@@ -93,6 +94,24 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
         newTier = body.new_tier || body.tier;
         keyHash = body.key_hash || body.hash;
         oldKeyHash = body.old_key_hash || body.old_hash;
+        type = body.type;
+
+        // 🌟 核心逻辑扩展：如果 type 是 skill_update 或 skill_activation，则执行技能存储逻辑
+        if (type === 'skill_update' || type === 'skill_activation') {
+            const { skill_name, status, manifest } = body;
+            if (userUid && skill_name && status && manifest) {
+                const lowerStatus = status.toLowerCase();
+                if (lowerStatus === 'private') {
+                    const privateKey = SkillKeys.private(userUid, skill_name);
+                    await env.UNISKILL_KV.put(privateKey, JSON.stringify(manifest));
+                    console.log(`[Admin] Synced private skill to KV via sync_cache: ${privateKey}`);
+                } else if (lowerStatus === 'public' || lowerStatus === 'community' || lowerStatus === 'official') {
+                    const marketKey = SkillKeys.market(skill_name);
+                    await env.UNISKILL_KV.put(marketKey, JSON.stringify(manifest));
+                    console.log(`[Admin] Synced public/community skill to KV via sync_cache: ${marketKey}`);
+                }
+            }
+        }
     } catch { /* ignore */ }
 
     if (!userUid) {
@@ -124,18 +143,20 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
         updated_at: Date.now()
     };
     
-    await env.UNISKILL_KV.put(SkillKeys.profile(userUid), JSON.stringify(profile));
-    setCache(`profile:${userUid}`, profile);
-    setCache(`credits:${userUid}`, profile.credits);
-    setCache(`tier:${userUid}`, profile.tier);
-
-    console.log(`[Admin] Sync Cache successful for ${userUid}: Profile Overwritten (Credits=${profile.credits}, Tier=${profile.tier})`);
+    // 如果没有传 credits/tier，跳过 profile 更新逻辑
+    if (totalCredits !== undefined || newTier) {
+        await env.UNISKILL_KV.put(SkillKeys.profile(userUid), JSON.stringify(profile));
+        setCache(`profile:${userUid}`, profile);
+        setCache(`credits:${userUid}`, profile.credits);
+        setCache(`tier:${userUid}`, profile.tier);
+        console.log(`[Admin] Sync Cache successful for ${userUid}: Profile Overwritten (Credits=${profile.credits}, Tier=${profile.tier})`);
+    }
 
     return new Response(
         JSON.stringify({
             success: true,
             user_uid: userUid,
-            synced: profile,
+            type: type || 'profile_sync',
             _uniskill: {
                 request_id: request.headers.get("cf-ray") ?? crypto.randomUUID(),
                 version: GATEWAY_VERSION,
@@ -218,4 +239,76 @@ export async function handleTopup(request: Request, env: Env): Promise<Response>
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
     );
+}
+
+/**
+ * Handles POST /v1/admin/sync_skill
+ * Called when a skill transitions to active state (Finalize API).
+ * Updates KV cache for the skill and triggers discovery rebuild if public.
+ */
+export async function handleSyncSkill(request: Request, env: Env): Promise<Response> {
+    try {
+        const body = await request.json() as any;
+        const { user_uid, skill_name, status, manifest } = body;
+
+        if (!user_uid || !skill_name || !status || !manifest) {
+            return new Response(
+                JSON.stringify({ success: false, error: "Missing required fields" }),
+                { status: 400, headers: { "Content-Type": "application/json" } }
+            );
+        }
+
+        const lowerStatus = status.toLowerCase();
+        if (lowerStatus === 'private') {
+            const privateKey = SkillKeys.private(user_uid, skill_name);
+            await env.UNISKILL_KV.put(privateKey, JSON.stringify(manifest));
+            console.log(`[Admin] Synced private skill to KV: ${privateKey}`);
+        } else if (lowerStatus === 'public' || lowerStatus === 'community' || lowerStatus === 'official') {
+            const marketKey = SkillKeys.market(skill_name);
+            await env.UNISKILL_KV.put(marketKey, JSON.stringify(manifest));
+            console.log(`[Admin] Synced public skill to KV: ${marketKey}`);
+            
+            // Rebuild tools_cache
+            let toolsCache: any[] = [];
+            const cachedStr = await env.UNISKILL_KV.get("mcp_registry:tools_cache");
+            if (cachedStr) {
+                try { toolsCache = JSON.parse(cachedStr); } catch { }
+            }
+            
+            // Deduplicate
+            toolsCache = toolsCache.filter(t => t.name !== skill_name && t.id !== skill_name);
+            
+            // We ensure manifest has name property for MCP client
+            const toolEntry = {
+                name: manifest.id || skill_name,
+                description: manifest.meta?.description || "A UniSkill Tool",
+                inputSchema: manifest.meta?.parameters || { type: "object", properties: {} }
+            };
+            toolsCache.push(toolEntry);
+
+            await env.UNISKILL_KV.put("mcp_registry:tools_cache", JSON.stringify(toolsCache));
+            
+            // Trigger global refresh broadcast
+            await env.UNISKILL_KV.put("mcp_broadcast:tools_changed", Date.now().toString());
+            console.log(`[Admin] Rebuilt tools_cache and triggered broadcast for ${skill_name}`);
+        }
+
+        return new Response(
+            JSON.stringify({
+                success: true,
+                skill_name,
+                status,
+                _uniskill: {
+                    request_id: request.headers.get("cf-ray") ?? crypto.randomUUID(),
+                    version: GATEWAY_VERSION,
+                },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+    } catch (e: any) {
+        return new Response(
+            JSON.stringify({ success: false, error: "Internal server error: " + e.message }),
+            { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+    }
 }

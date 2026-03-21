@@ -9,7 +9,6 @@ export function formatWeather(rawData: any): string {
         // 提取最核心的数据节点
         const area = rawData.nearest_area[0];
         const current = rawData.current_condition[0];
-        const todayForecast = rawData.weather[0];
 
         // 重组为我们在 .md 中承诺的 Returns 结构
         const formattedData = {
@@ -20,13 +19,11 @@ export function formatWeather(rawData: any): string {
                 humidity: `${current.humidity}%`,
                 wind: `${current.windspeedKmph} km/h`
             },
-            forecast: [
-                {
-                    date: todayForecast.date,
-                    avg_temp: `${todayForecast.avgtempC}°C`,
-                    condition: todayForecast.hourly[0].weatherDesc[0].value // 取中午的天气作为概览
-                }
-            ]
+            forecast: rawData.weather.map((day: any) => ({
+                date: day.date,
+                avg_temp: `${day.avgtempC}°C`,
+                condition: day.hourly[4]?.weatherDesc[0]?.value || day.hourly[0]?.weatherDesc[0]?.value // 优先中午，兜底第一个时段
+            }))
         };
 
         return JSON.stringify(formattedData);
