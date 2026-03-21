@@ -77,12 +77,13 @@ export const SkillParser = {
         // ── Step 3: Extract Parameters (JSON block) ──
         // 逻辑：精准提取 ```json 和 ``` 之间的内容并反序列化
         const jsonMatch = input.match(/#+\s*Parameters[\s\S]*?```(?:json)?\s*([\s\S]*?)\n\s*```/i);
-        let parameters = {};
+        let parameters = { type: "object", properties: {} };
         if (jsonMatch) {
             try {
                 parameters = JSON.parse(jsonMatch[1].trim());
             } catch (error) {
-                console.error(`[Parser Error] Invalid JSON parameters in skill: ${name}`);
+                console.error(`[Parser Error] Invalid JSON parameters in skill: ${name}. Falling back to empty object schema.`);
+                parameters = { type: "object", properties: {} };
             }
         }
 

@@ -3,6 +3,7 @@
 // 职责：在内存中维护 SSE 流，确保消息推送的一致性，防止分布式孤岛导致的卡死。
 
 import { handleExecuteSkill } from "../routes/execute-skill";
+import { SkillParser } from "../engine/parser";
 
 /**
  * 逻辑：网关级数据防腐层 - 强制将任何奇葩数据转化为 MCP 兼容的纯文本
@@ -226,7 +227,10 @@ export class MCPSession {
                     const list = await this.env.UNISKILL_KV.list({ prefix: `skill:private:${userUid}:` });
                     const fetchPromises = list.keys.map(async (key: any) => {
                         const raw = await this.env.UNISKILL_KV.get(key.name);
-                        if (raw) {
+                        if (!raw) return null;
+
+                        try {
+                            // 1. 尝试作为大一统 JSON 解析 (Try parsing as Unified JSON)
                             try {
                                 const tool = JSON.parse(raw);
                                 return {
@@ -234,9 +238,19 @@ export class MCPSession {
                                     description: tool.meta?.description || tool.description || "Private tool",
                                     inputSchema: tool.meta?.parameters || { type: "object", properties: {} }
                                 };
-                            } catch (e) { return null; }
+                            } catch (jsonErr) {
+                                // 2. 回退：作为原始 Markdown 解析 (Fallback to Markdown parsing)
+                                const tool = SkillParser.parse(raw);
+                                return {
+                                    name: tool.name || key.name.split(':').pop(),
+                                    description: tool.description || "Private tool (parsed from Markdown)",
+                                    inputSchema: tool.parameters || { type: "object", properties: {} }
+                                };
+                            }
+                        } catch (e) {
+                            console.error(`[MCPSession] Failed to process tool ${key.name}:`, e);
+                            return null;
                         }
-                        return null;
                     });
                     const privateTools = (await Promise.all(fetchPromises)).filter(Boolean);
                     
