@@ -47,16 +47,16 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     }
 
     // Logic: Resolve skillName from path or body
-    let skillName: string | undefined;
+    let skillName: string | undefined = body.skill_name || body.skill;
     
-    // Check if skillName is in the path (e.g. /v1/execute/uniskill_wiki)
-    if (path.startsWith("/v1/execute/") && path.split("/").length > 3) {
+    // Fallback: Check if skillName is in the path (e.g. /v1/execute/uniskill_wiki)
+    if (!skillName && path.startsWith("/v1/execute/") && path.split("/").length > 3) {
         skillName = path.split("/")[3];
     } 
     
     // If not in path, check the body (required for /v1/execute)
     if (!skillName) {
-        return errorResponse("Missing skill_name", 400);
+        return errorResponse("Missing skill_name in path or body", 400);
     }
 
     const normalizedSkillName = skillName.startsWith("uniskill_") ? skillName : `uniskill_${skillName}`;

@@ -261,15 +261,21 @@ export class MCPSession {
         }
     }
     else if (method === "tools/call") {
-        const toolName = params.name;
+        const toolName = params.name; // e.g., "uniskill.weather" or "owner_uid.skill_name"
         const toolArguments = params.arguments;
         const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || "";
+
+        // 🌟 1. 解析技能名称和所有者 (Parse skill and owner)
+        const nameParts = toolName.split('.');
+        const isPrivate = nameParts.length > 1;
+        const actualSkillName = isPrivate ? nameParts[1] : toolName;
 
         let finalOutput = "";
         try {
             const executeUrl = new URL(originalRequest.url);
             executeUrl.pathname = `/v1/execute`;
 
+            // 🌟 2. 按照网关要求的 Envelope 格式组装请求 (Assemble Gateway Envelope)
             const internalRequest = new Request(executeUrl.toString(), {
                 method: "POST",
                 headers: {
@@ -277,8 +283,9 @@ export class MCPSession {
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    skill: toolName,
-                    params: toolArguments || {}
+                    skill_name: actualSkillName,
+                    payload: toolArguments || {},
+                    user_uid: isPrivate ? nameParts[0] : "public"
                 })
             });
 
