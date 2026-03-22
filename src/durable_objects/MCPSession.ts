@@ -278,20 +278,24 @@ export class MCPSession {
     }
     else if (method === "tools/call") {
         const toolName = params.name; // e.g., "uniskill.weather" or "owner_uid.skill_name"
-        const toolArguments = params.arguments;
+        const toolArguments = params.arguments || {};
         const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || "";
 
-        // 🌟 1. 解析技能名称和所有者 (Parse skill and owner)
+        // 🌟 1. 智能拆解命名空间 (Parse namespace intelligently)
         const nameParts = toolName.split('.');
         const isPrivate = nameParts.length > 1;
         const actualSkillName = isPrivate ? nameParts[1] : toolName;
+        const ownerUid = isPrivate ? nameParts[0] : "public";
 
         let finalOutput = "";
+        let isError = false;
+
         try {
             const executeUrl = new URL(originalRequest.url);
             executeUrl.pathname = `/v1/execute`;
 
-            // 🌟 2. 按照网关要求的 Envelope 格式组装请求 (Assemble Gateway Envelope)
+            // 🌟 2. 组装绝对严谨的底层信封 (Assemble strict internal envelope)
+            // 双重保险：同时塞入 payload 和 params，彻底防止 "最后一公里" 丢包
             const internalRequest = new Request(executeUrl.toString(), {
                 method: "POST",
                 headers: {
@@ -300,15 +304,19 @@ export class MCPSession {
                 },
                 body: JSON.stringify({
                     skill_name: actualSkillName,
-                    payload: toolArguments || {},
-                    user_uid: isPrivate ? nameParts[0] : "public"
+                    skill_id: toolName, 
+                    user_uid: ownerUid,
+                    payload: toolArguments,            
+                    params: toolArguments              
                 })
             });
 
             const response = await handleExecuteSkill(internalRequest, this.env, this.ctx as any); 
             
             if (!response.ok) {
-                finalOutput = `[Error] Gateway rejected the request with status: ${response.status}. Message: ${await response.text()}`;
+                const errorText = await response.text();
+                finalOutput = `[Gateway Error] ${response.status}: ${errorText}`;
+                isError = true;
             } else {
                 const resultRaw = await response.text();
                 try {
@@ -320,10 +328,12 @@ export class MCPSession {
             }
         } catch (apiError: any) {
             finalOutput = `[Tool Execution Failed] Upstream API Error: ${apiError.message || "Unknown error"}`;
+            isError = true;
         }
 
         result = {
-            content: [{ type: "text", text: finalOutput }]
+            content: [{ type: "text", text: finalOutput }],
+            isError: isError
         };
     }
     else if (method === "initialize") {
