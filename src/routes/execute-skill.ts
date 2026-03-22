@@ -60,7 +60,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     }
 
     const normalizedSkillName = skillName.startsWith("uniskill_") ? skillName : `uniskill_${skillName}`;
-    const params = body.params || body;
+    const params = body.payload || body.params || body;
 
     try {
         // ── Step 3: Identity & Billing Resolve ──
