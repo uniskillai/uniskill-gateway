@@ -237,7 +237,8 @@ export class MCPSession {
                                 return {
                                     name: `${userUid}.${baseName}`, // 🌟 统一为 owner.skill 格式
                                     description: tool.meta?.description || tool.description || "Private tool",
-                                    inputSchema: tool.meta?.parameters || { type: "object", properties: {} }
+                                    // 🌟 核心修复：优先从 config.parameters 提取最新的 Schema
+                                    inputSchema: tool.config?.parameters || tool.parameters || tool.meta?.parameters || { type: "object", properties: {} }
                                 };
                             } catch (jsonErr) {
                                 // 2. 回退：作为原始 Markdown 解析 (Fallback to Markdown parsing)
