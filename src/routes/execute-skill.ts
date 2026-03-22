@@ -146,7 +146,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             const syntheticRequest = new Request(request.url, {
                 method: "POST",
                 headers: request.headers,
-                body: JSON.stringify(params)
+                body: JSON.stringify({ ...body, ...params }) // 🌟 严谨信封：保留西瓜，同时把种子铺在顶层
             });
 
             let nativeResponse: Response;
