@@ -233,16 +233,18 @@ export class MCPSession {
                             // 1. 尝试作为大一统 JSON 解析 (Try parsing as Unified JSON)
                             try {
                                 const tool = JSON.parse(raw);
+                                const baseName = tool.id || key.name.split(':').pop();
                                 return {
-                                    name: tool.id || key.name.split(':').pop(),
+                                    name: `${userUid}.${baseName}`, // 🌟 统一为 owner.skill 格式
                                     description: tool.meta?.description || tool.description || "Private tool",
                                     inputSchema: tool.meta?.parameters || { type: "object", properties: {} }
                                 };
                             } catch (jsonErr) {
                                 // 2. 回退：作为原始 Markdown 解析 (Fallback to Markdown parsing)
                                 const tool = SkillParser.parse(raw);
+                                const baseName = tool.name || key.name.split(':').pop();
                                 return {
-                                    name: tool.name || key.name.split(':').pop(),
+                                    name: `${userUid}.${baseName}`, // 🌟 统一为 owner.skill 格式
                                     description: tool.description || "Private tool (parsed from Markdown)",
                                     inputSchema: tool.parameters || { type: "object", properties: {} }
                                 };

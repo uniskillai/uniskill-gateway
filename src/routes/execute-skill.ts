@@ -64,28 +64,30 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
 
     try {
         // ── Step 3: Identity & Billing Resolve ──
-        // 逻辑：先锁定用户 UID，因为私有技能查找强依赖 UID
-        const userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
-        const profile = await getProfile(env.UNISKILL_KV, userUid, env, keyHash);
+        // 逻辑：1. 锁定调用者 UID (计费对象)；2. 锁定目标 UID (私有技能命名空间)
+        const callerUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
+        const targetUid = body.user_uid || callerUid; // 支持 MCP 路由解析出的 owner.skill
+        
+        const profile = await getProfile(env.UNISKILL_KV, callerUid, env, keyHash);
         
         const userTier = profile.tier;
         let currentCredits = profile.credits;
 
         // ── Step 4: Skill Configuration Lookup (Multi-Namespace) ──
-        // 逻辑：优先级 Private > Official > Market
+        // 逻辑：优先级 Private (Target) > Official > Market
         let skillRaw: string | null = null;
         let finalSkillName = normalizedSkillName;
         let isPrivate = false;
         
-        // 4a. Try Private
-        if (userUid) {
-            const pKeyRaw = SkillKeys.private(userUid, skillName);
-            const pKeyNorm = SkillKeys.private(userUid, normalizedSkillName);
+        // 4a. Try Private (Using targetUid for potential cross-user MCP routing)
+        if (targetUid && targetUid !== "public") {
+            const pKeyRaw = SkillKeys.private(targetUid, skillName);
+            const pKeyNorm = SkillKeys.private(targetUid, normalizedSkillName);
             skillRaw = await env.UNISKILL_KV.get(pKeyRaw) || await env.UNISKILL_KV.get(pKeyNorm);
             if (skillRaw) {
                 finalSkillName = skillName;
                 isPrivate = true;
-                console.log(`[DEBUG] Found PRIVATE skill: ${skillName} for user ${userUid}`);
+                console.log(`[DEBUG] Found PRIVATE skill: ${skillName} in namespace ${targetUid}`);
             }
         }
 
@@ -216,7 +218,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         if (creditsPerCall > 0) {
             ctx.waitUntil(deductCredit(
                 env.UNISKILL_KV,
-                userUid,
+                callerUid,
                 currentCredits,
                 creditsPerCall,
                 env.VERCEL_WEBHOOK_URL,
@@ -233,7 +235,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         // ── Step 9: Record Statistics (Dynamic Metadata) ──
         ctx.waitUntil(recordSkillCall(
             env, 
-            userUid, 
+            callerUid, 
             finalSkillName, 
             requestId, 
             creditsPerCall, 
