@@ -38,7 +38,7 @@ export const SkillParser = {
             if (input.trim().startsWith('{')) {
                 const unified = JSON.parse(input);
                 if (unified.config || unified.implementation || unified.source) {
-                    const baseImplementation = unified.config || unified.implementation || {};
+                    const baseImplementation = { ...(unified.implementation || {}), ...(unified.config || {}) };
                     let finalImplementation = baseImplementation;
 
                     // 🌟 核心增强：如果浅层 config 缺失关键逻辑 (如 type)，则从源码 fallback 解析
