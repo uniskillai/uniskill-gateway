@@ -44,6 +44,28 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
 
     const placeholderRegex = /\{\{([a-zA-Z0-9._-]+)(?:\|([^}]+))?\}\}/g;
 
+    // ── Pre-Resolution: Check for mandatory secrets ──
+    // 逻辑：在正式渲染前预检 SECRETS 占位符，如果缺失则直接熔断 (Fail Fast)
+    const missingSecrets = [];
+    const fullText = targetUrl + JSON.stringify(impl.headers || {}) + JSON.stringify(impl.request?.headers || {});
+    const matches = fullText.matchAll(placeholderRegex);
+    for (const match of matches) {
+        const key = match[1];
+        if (key.startsWith("SECRETS.")) {
+            const secretName = key.split(".")[1];
+            if (!userSecrets[secretName]) {
+                missingSecrets.push(secretName);
+            }
+        }
+    }
+
+    if (missingSecrets.length > 0) {
+        return { 
+            success: false, 
+            error: `Missing required private secrets: ${missingSecrets.join(", ")}. Please configure them in your UniSkill dashboard.` 
+        };
+    }
+
     // ── Step 1: Resolve URL ──
     targetUrl = targetUrl.replace(placeholderRegex, (match: string, key: string, defaultValue: string) => {
         const val = resolveValue(key, defaultValue);
