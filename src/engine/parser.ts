@@ -38,13 +38,27 @@ export const SkillParser = {
             if (input.trim().startsWith('{')) {
                 const unified = JSON.parse(input);
                 if (unified.config || unified.implementation || unified.source) {
-                    const baseImplementation = { ...(unified.implementation || {}), ...(unified.config || {}) };
+                    // 🌟 深度合并增强：不仅是顶层，确保核心字段不丢失
+                    const baseImplementation = { 
+                        ...(unified.implementation || {}), 
+                        ...(unified.config || {}) 
+                    };
                     let finalImplementation = baseImplementation;
 
+                    // 🌟 平台架构适配：如果包含 request 对象，确保 url/method 提升至兼容层级
+                    if (baseImplementation.request) {
+                        finalImplementation = {
+                            ...finalImplementation,
+                            endpoint: baseImplementation.request.url || baseImplementation.endpoint,
+                            method: baseImplementation.request.method || baseImplementation.method,
+                            headers: { ...(baseImplementation.request.headers || {}), ...(baseImplementation.headers || {}) }
+                        };
+                    }
+
                     // 🌟 核心增强：如果浅层 config 缺失关键逻辑 (如 type)，则从源码 fallback 解析
-                    if ((!baseImplementation.type || baseImplementation.type === 'unknown') && unified.source) {
+                    if ((!finalImplementation.type || finalImplementation.type === 'unknown') && unified.source) {
                         const fallbackParsed = this.parse(unified.source);
-                        finalImplementation = { ...fallbackParsed.implementation, ...baseImplementation };
+                        finalImplementation = { ...fallbackParsed.implementation, ...finalImplementation };
                     }
 
                     return {

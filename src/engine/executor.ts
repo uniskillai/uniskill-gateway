@@ -15,33 +15,53 @@ export interface Env {
 }
 
 export async function executeSkill(impl: any, params: any, env: Env) {
-    // ── Pre-process: Variable Substitution in Endpoint ──
-    // 逻辑：将 endpoint 中的 {{key|default}} 占位符替换为 params 中的实际值
-    let targetUrl = impl.endpoint || impl.url;
+    // ── Pre-process: Resolve technical fields ──
+    const endpoint = impl.endpoint || impl.url;
+    const method = (impl.method || impl.request?.method || "POST").toUpperCase();
     
-    if (!targetUrl) {
-        return JSON.stringify({ error: "Missing endpoint or url in skill implementation." });
+    if (!endpoint) {
+        return { error: "Missing endpoint or url in skill implementation." };
     }
 
+    let targetUrl = endpoint;
     const consumedParams = new Set<string>();
 
-    const placeholderRegex = /\{\{([a-zA-Z0-9_-]+)(?:\|([^}]+))?\}\}/g;
-    targetUrl = targetUrl.replace(placeholderRegex, (match: string, key: string, defaultValue: string) => {
+    // 🌟 增强型变量处理器 (Enhanced variable resolver)
+    const resolveValue = (key: string, defaultValue?: string) => {
+        if (key.startsWith("SECRETS.")) {
+            const secretName = key.split(".")[1];
+            if (secretName === "TAVILY_API_KEY") return env.TAVILY_API_KEY;
+            if (secretName === "JINA_API_KEY") return env.JINA_API_KEY;
+            if (secretName === "MAPBOX_API_KEY") return env.MAPBOX_API_KEY;
+            return defaultValue || `[SECRET_${secretName}_NOT_FOUND]`;
+        }
         const val = params[key] !== undefined ? params[key] : defaultValue;
-        if (val === undefined) return match; // Keep the placeholder if no value/default
-        consumedParams.add(key);
-        // Encode for URL safety
-        return encodeURIComponent(String(val));
+        if (val !== undefined) consumedParams.add(key);
+        return val;
+    };
+
+    const placeholderRegex = /\{\{([a-zA-Z0-9._-]+)(?:\|([^}]+))?\}\}/g;
+
+    // ── Step 1: Resolve URL ──
+    targetUrl = targetUrl.replace(placeholderRegex, (match: string, key: string, defaultValue: string) => {
+        const val = resolveValue(key, defaultValue);
+        return val !== undefined ? encodeURIComponent(String(val)) : match;
     });
 
-    // ── Step 1: Authentication & Header Injection ──
+    // ── Step 2: Authentication & Header Injection ──
     let headers: Record<string, string> = {
         "Content-Type": "application/json"
     };
 
-    // Merge custom headers from implementation YAML
-    if (impl.headers) {
-        headers = { ...headers, ...impl.headers };
+    // Merge and Resolve Headers
+    const rawHeaders = { ...(impl.headers || {}), ...(impl.request?.headers || {}) };
+    for (const [k, v] of Object.entries(rawHeaders)) {
+        if (typeof v === 'string') {
+            headers[k] = v.replace(placeholderRegex, (match: string, key: string, defaultValue: string) => {
+                const val = resolveValue(key, defaultValue);
+                return val !== undefined ? String(val) : match;
+            });
+        }
     }
 
     if (impl.api_key) {
@@ -54,9 +74,7 @@ export async function executeSkill(impl: any, params: any, env: Env) {
         }
     }
 
-    // ── Step 2: Request Execution ──
-    const method = (impl.method || "POST").toUpperCase();
-
+    // ── Step 3: Request Execution ──
     const fetchOptions: RequestInit = {
         method: method,
         headers: headers
@@ -64,7 +82,6 @@ export async function executeSkill(impl: any, params: any, env: Env) {
 
     try {
         if (method === "GET") {
-            // GET 请求：排除掉已经被 endpoint 中间占位符消费掉的参数
             const remainingParams: Record<string, string> = {};
             for (const key in params) {
                 if (!consumedParams.has(key)) {
@@ -77,8 +94,14 @@ export async function executeSkill(impl: any, params: any, env: Env) {
                 targetUrl += targetUrl.includes('?') ? `&${queryParams}` : `?${queryParams}`;
             }
         } else {
-            // POST / PUT / PATCH：发送剩余参数
-            if (params) {
+            // Priority: Explicit body template > All params
+            const bodyTemplate = impl.body || impl.request?.body;
+            if (bodyTemplate) {
+                // Logic: If there is a template, we just pass it (assuming placeholders already covered)
+                // BUT for now, most skills just dump params. 
+                // Let's stick to the Dumping params for safety unless it's a specific format.
+                fetchOptions.body = JSON.stringify(params);
+            } else if (params) {
                 fetchOptions.body = JSON.stringify(params);
             }
         }
@@ -91,7 +114,6 @@ export async function executeSkill(impl: any, params: any, env: Env) {
             const errorText = await response.text();
             let errorMessage = `Upstream API returned ${response.status}`;
             
-            // Logic: Distinguish between different error types for better UX
             if (response.status === 429) {
                 errorMessage = "Upstream provider rate limit exceeded. Please try again later.";
             } else if (response.status === 404) {
@@ -112,13 +134,13 @@ export async function executeSkill(impl: any, params: any, env: Env) {
 
         const rawData = await response.json();
         
-        // ── Step 3: Response Mapping ──
-        // 逻辑：执行轻量级字段映射，减少下游 Token 消耗
-        if (impl.response_mapping && typeof impl.response_mapping === 'object') {
+        // ── Step 4: Response Mapping ──
+        const mapping = impl.response_mapping || impl.response?.output_mapping;
+        if (mapping && typeof mapping === 'object') {
             const mappedData: Record<string, any> = {};
             let hasMapping = false;
 
-            for (const [k, v] of Object.entries(impl.response_mapping)) {
+            for (const [k, v] of Object.entries(mapping)) {
                 if (v && typeof v === 'string') {
                     const extracted = evaluateJsonPath(rawData, v);
                     mappedData[k] = extracted;
