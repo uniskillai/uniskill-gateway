@@ -200,18 +200,35 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         } else {
             // 🌟 核心增强：多级密钥加载 (Fetch Multi-level Secrets)
             let rawSecrets: Record<string, string> = {};
+
+            // 🌟 辅助函数：将多种格式的 Secrets 统一合并到 Map 中
+            const mergeSecrets = (target: Record<string, string>, raw: string | null) => {
+                if (!raw) return target;
+                try {
+                    const parsed = JSON.parse(raw);
+                    if (Array.isArray(parsed)) {
+                        // 如果是数组格式 [{key, value}, ...] (控制台组件原始格式)
+                        parsed.forEach((item: any) => {
+                            if (item.key && item.value) target[item.key] = item.value;
+                        });
+                    } else if (typeof parsed === 'object') {
+                        // 如果是对象格式 {key: value} (网关标准格式)
+                        Object.assign(target, parsed);
+                    }
+                } catch (e) {
+                    console.error("[Executor] JSON parse error for secrets:", e);
+                }
+                return target;
+            };
+
             try {
                 // 1. 加载用户全局密钥 (User-level)
                 const userSecretsRaw = await env.UNISKILL_KV.get(SkillKeys.secrets(callerUid));
-                if (userSecretsRaw) {
-                    rawSecrets = { ...rawSecrets, ...JSON.parse(userSecretsRaw) };
-                }
+                mergeSecrets(rawSecrets, userSecretsRaw);
                 
                 // 2. 加载技能专属密钥 (Skill-level, has higher priority)
                 const skillSecretsRaw = await env.UNISKILL_KV.get(SkillKeys.skillSecrets(callerUid, skillName!));
-                if (skillSecretsRaw) {
-                    rawSecrets = { ...rawSecrets, ...JSON.parse(skillSecretsRaw) };
-                }
+                mergeSecrets(rawSecrets, skillSecretsRaw);
             } catch (e) {
                 console.error(`[Executor] Failed to load raw secrets for ${callerUid}:`, e);
             }
