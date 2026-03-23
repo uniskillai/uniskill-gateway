@@ -287,7 +287,7 @@ export class MCPSession {
                                     const toolRaw = JSON.parse(raw);
                                     const baseName = toolRaw.id || key.name.split(':').pop();
                                     return {
-                                        name: `${userUid}.${baseName}`, 
+                                        name: `${userUid}__${baseName}`, 
                                         description: toolRaw.meta?.description || toolRaw.description || "Private tool",
                                         inputSchema: toolRaw.config?.parameters || toolRaw.meta?.parameters || toolRaw.parameters || { type: "object", properties: {} }
                                     };
@@ -296,7 +296,7 @@ export class MCPSession {
                                     const toolSpec = SkillParser.parse(raw);
                                     const baseName = toolSpec.name || key.name.split(':').pop();
                                     return {
-                                        name: `${userUid}.${baseName}`,
+                                        name: `${userUid}__${baseName}`,
                                         description: toolSpec.description || "Private tool (parsed from Markdown)",
                                         inputSchema: toolSpec.parameters || { type: "object", properties: {} }
                                     };
@@ -335,12 +335,13 @@ export class MCPSession {
         }
     }
     else if (method === "tools/call") {
-        const toolName = params.name; // e.g., "uniskill.weather" or "owner_uid.skill_name"
+        const toolName = params.name; // e.g., "uniskill__weather" or "owner_uid__skill_name"
         const toolArguments = params.arguments || {};
-        const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || "";
+        // 🌟 核心修复：补全会话身份感应 (Fix: Ensure session identity persistence)
+        const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || this.storedAuthHeader || "";
 
-        // 🌟 1. 智能拆解命名空间 (Parse namespace intelligently)
-        const nameParts = toolName.split('.');
+        // 🌟 1. 智能拆解命名空间 (Parse namespace intelligently using double underscore)
+        const nameParts = toolName.split('__');
         const isPrivate = nameParts.length > 1;
         const actualSkillName = isPrivate ? nameParts[1] : toolName;
         const ownerUid = isPrivate ? nameParts[0] : "public";
