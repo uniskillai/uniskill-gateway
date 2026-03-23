@@ -25,6 +25,12 @@ export const SkillKeys = {
      */
     secrets: (uid: string) => `user:secrets:${uid}`,
 
+    /**
+     * Logic: Skill-specific API keys (Secrets)
+     * 逻辑：技能专属的 API 密钥（Secrets），对应 skills 表的 secrets 字段
+     */
+    skillSecrets: (uid: string, name: string) => `skill:secrets:${uid}:${name}`,
+
     // Logic: Unified user profile storage (Credits + Tier)
     // 逻辑：统一的用户信息存储（包含积分和等级）
     profile: (uid: string) => `user:profile:${uid}`,

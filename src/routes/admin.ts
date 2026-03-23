@@ -97,14 +97,22 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
         type = body.type;
 
         // 🌟 核心逻辑扩展：如果 type 是 skill_update 或 skill_activation，则执行技能存储逻辑
+        // 🌟 核心逻辑扩展：如果 type 是 skill_update 或 skill_activation，则执行技能及密钥存储逻辑
         if (type === 'skill_update' || type === 'skill_activation') {
-            const { skill_name, status, manifest } = body;
+            const { skill_name, status, manifest, secrets } = body;
             if (userUid && skill_name && status && manifest) {
                 const lowerStatus = status.toLowerCase();
                 if (lowerStatus === 'private') {
                     const privateKey = SkillKeys.private(userUid, skill_name);
                     await env.UNISKILL_KV.put(privateKey, JSON.stringify(manifest));
                     console.log(`[Admin] Synced private skill to KV via sync_cache: ${privateKey}`);
+                    
+                    // 🌟 密钥同步：存储加密后的技能专属密钥
+                    if (secrets && typeof secrets === 'object') {
+                        const secretsKey = SkillKeys.skillSecrets(userUid, skill_name);
+                        await env.UNISKILL_KV.put(secretsKey, JSON.stringify(secrets));
+                        console.log(`[Admin] Synced skill-scoped secrets for ${skill_name}`);
+                    }
                 } else if (lowerStatus === 'public' || lowerStatus === 'community' || lowerStatus === 'official') {
                     const marketKey = SkillKeys.market(skill_name);
                     await env.UNISKILL_KV.put(marketKey, JSON.stringify(manifest));

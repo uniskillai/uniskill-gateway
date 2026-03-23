@@ -25,6 +25,7 @@ export interface Env {
   INTERNAL_API_SECRET: string;
   TEST_WALLET_ADDRESS?: string;
   GITHUB_TOKEN?: string;
+  MASTER_ENCRYPTION_KEY: string;
   MCP_SESSION: DurableObjectNamespace;
 }
 

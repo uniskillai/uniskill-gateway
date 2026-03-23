@@ -11,6 +11,7 @@ import { formatters } from "../formatters/index";
 import { checkRateLimit } from "../rateLimit";
 import type { Env } from "../index";
 import { recordSkillCall } from "../utils/stats";
+import { decryptSecret } from "../utils/security";
 
 // Logic: Hardcoded native handlers that don't use the generic executor
 const HARDCODED_NATIVE_SKILLS = new Set([
@@ -197,19 +198,42 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
                 } catch { finalData = { result: formatted }; }
             }
         } else {
-            // 🌟 核心增强：读取用户私有 Secrets (Fetch User Secrets)
-            let userSecrets: Record<string, string> = {};
+            // 🌟 核心增强：多级密钥加载 (Fetch Multi-level Secrets)
+            let rawSecrets: Record<string, string> = {};
             try {
-                const secretsRaw = await env.UNISKILL_KV.get(SkillKeys.secrets(callerUid));
-                if (secretsRaw) {
-                    userSecrets = JSON.parse(secretsRaw);
+                // 1. 加载用户全局密钥 (User-level)
+                const userSecretsRaw = await env.UNISKILL_KV.get(SkillKeys.secrets(callerUid));
+                if (userSecretsRaw) {
+                    rawSecrets = { ...rawSecrets, ...JSON.parse(userSecretsRaw) };
+                }
+                
+                // 2. 加载技能专属密钥 (Skill-level, has higher priority)
+                const skillSecretsRaw = await env.UNISKILL_KV.get(SkillKeys.skillSecrets(callerUid, skillName!));
+                if (skillSecretsRaw) {
+                    rawSecrets = { ...rawSecrets, ...JSON.parse(skillSecretsRaw) };
                 }
             } catch (e) {
-                console.error(`[Executor] Failed to load secrets for ${callerUid}:`, e);
+                console.error(`[Executor] Failed to load raw secrets for ${callerUid}:`, e);
+            }
+
+            // 🌟 核心增强：实时解密 (On-the-fly Decryption)
+            const decryptedSecrets: Record<string, string> = {};
+            for (const [key, val] of Object.entries(rawSecrets)) {
+                try {
+                    // 如果是加密格式（包含三个点号），执行解密；否则视为明文兼容
+                    if (val && typeof val === 'string' && val.split('.').length === 3) {
+                        decryptedSecrets[key] = decryptSecret(val, env.MASTER_ENCRYPTION_KEY);
+                    } else {
+                        decryptedSecrets[key] = val;
+                    }
+                } catch (e) {
+                    console.error(`[Security] Failed to decrypt secret [${key}] for ${callerUid}:`, e);
+                    decryptedSecrets[key] = `[DECRYPTION_FAILED_${key}]`;
+                }
             }
 
             try {
-                finalData = await executeSkill(implementation, params, env, userSecrets);
+                finalData = await executeSkill(implementation, params, env, decryptedSecrets);
             } catch (execErr: any) {
                 return errorResponse(execErr.message, 502);
             }
