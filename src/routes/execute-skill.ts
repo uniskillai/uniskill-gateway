@@ -197,8 +197,19 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
                 } catch { finalData = { result: formatted }; }
             }
         } else {
+            // 🌟 核心增强：读取用户私有 Secrets (Fetch User Secrets)
+            let userSecrets: Record<string, string> = {};
             try {
-                finalData = await executeSkill(implementation, params, env);
+                const secretsRaw = await env.UNISKILL_KV.get(SkillKeys.secrets(callerUid));
+                if (secretsRaw) {
+                    userSecrets = JSON.parse(secretsRaw);
+                }
+            } catch (e) {
+                console.error(`[Executor] Failed to load secrets for ${callerUid}:`, e);
+            }
+
+            try {
+                finalData = await executeSkill(implementation, params, env, userSecrets);
             } catch (execErr: any) {
                 return errorResponse(execErr.message, 502);
             }

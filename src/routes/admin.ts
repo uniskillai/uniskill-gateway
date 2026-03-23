@@ -112,6 +112,16 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
                 }
             }
         }
+
+        // 🌟 核心逻辑扩展：如果 type 是 secrets_sync，则执行用户私有密匙同步
+        if (type === 'secrets_sync') {
+            const { secrets } = body;
+            if (userUid && secrets && typeof secrets === 'object') {
+                const secretsKey = SkillKeys.secrets(userUid);
+                await env.UNISKILL_KV.put(secretsKey, JSON.stringify(secrets));
+                console.log(`[Admin] Synced user secrets to KV via sync_cache: ${secretsKey}`);
+            }
+        }
     } catch { /* ignore */ }
 
     if (!userUid) {

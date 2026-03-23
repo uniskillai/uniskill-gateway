@@ -19,6 +19,12 @@ export const SkillKeys = {
      */
     market: (name: string) => `skill:market:${name}`,
 
+    /**
+     * Logic: User-specific API keys (Secrets) for private tools
+     * 逻辑：用户私有的 API 密钥（Secrets），用于私有工具调用
+     */
+    secrets: (uid: string) => `user:secrets:${uid}`,
+
     // Logic: Unified user profile storage (Credits + Tier)
     // 逻辑：统一的用户信息存储（包含积分和等级）
     profile: (uid: string) => `user:profile:${uid}`,

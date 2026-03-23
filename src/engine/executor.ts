@@ -14,7 +14,7 @@ export interface Env {
     // ... 其他系统级环境变量
 }
 
-export async function executeSkill(impl: any, params: any, env: Env) {
+export async function executeSkill(impl: any, params: any, env: Env, userSecrets: Record<string, string> = {}) {
     // ── Pre-process: Resolve technical fields ──
     const endpoint = impl.endpoint || impl.url;
     const method = (impl.method || impl.request?.method || "POST").toUpperCase();
@@ -30,6 +30,11 @@ export async function executeSkill(impl: any, params: any, env: Env) {
     const resolveValue = (key: string, defaultValue?: string) => {
         if (key.startsWith("SECRETS.")) {
             const secretName = key.split(".")[1];
+            
+            // 🔐 身份优先原则：优先使用用户配置的私有 Key (User Secret Priority)
+            if (userSecrets[secretName]) return userSecrets[secretName];
+            
+            // 🌍 系统兜底：回退到网关全局配置 (System Fallback)
             if (secretName === "TAVILY_API_KEY") return env.TAVILY_API_KEY;
             if (secretName === "JINA_API_KEY") return env.JINA_API_KEY;
             if (secretName === "MAPBOX_API_KEY") return env.MAPBOX_API_KEY;
