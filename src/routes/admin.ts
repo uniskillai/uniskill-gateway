@@ -267,7 +267,7 @@ export async function handleTopup(request: Request, env: Env): Promise<Response>
 export async function handleSyncSkill(request: Request, env: Env): Promise<Response> {
     try {
         const body = await request.json() as any;
-        const { user_uid, skill_name, status, manifest } = body;
+        const { user_uid, skill_name, status, manifest, secrets } = body;
 
         if (!user_uid || !skill_name || !status || !manifest) {
             return new Response(
@@ -281,6 +281,13 @@ export async function handleSyncSkill(request: Request, env: Env): Promise<Respo
             const privateKey = SkillKeys.private(user_uid, skill_name);
             await env.UNISKILL_KV.put(privateKey, JSON.stringify(manifest));
             console.log(`[Admin] Synced private skill to KV: ${privateKey}`);
+
+            // 🌟 密钥同步：存储加密后的技能专属密钥 (Skill-scoped secrets)
+            if (secrets && typeof secrets === 'object') {
+                const secretsKey = SkillKeys.skillSecrets(user_uid, skill_name);
+                await env.UNISKILL_KV.put(secretsKey, JSON.stringify(secrets));
+                console.log(`[Admin] Synced skill-scoped secrets for ${skill_name} via sync_skill`);
+            }
         } else if (lowerStatus === 'public' || lowerStatus === 'community' || lowerStatus === 'official') {
             const marketKey = SkillKeys.market(skill_name);
             await env.UNISKILL_KV.put(marketKey, JSON.stringify(manifest));
