@@ -117,6 +117,7 @@ export class MCPSession {
   private ctx: DurableObjectState;
   private env: any; // Will be properly typed
   private controller: ReadableStreamDefaultController | null = null;
+  private storedAuthHeader: string = ""; // 🌟 核心状态：持久化存储握手时的鉴权信息
 
   constructor(ctx: DurableObjectState, env: any) {
     this.ctx = ctx;
@@ -127,6 +128,8 @@ export class MCPSession {
     // ── 通道 A: SSE 建立 (GET) ──────────────────
     if (request.method === "GET") {
       console.log(`[DO] 🔗 New SSE Connection establishing...`);
+      // 🌟 核心修复：在握手阶段锁定身份 (Lock identity during handshake)
+      this.storedAuthHeader = request.headers.get("Authorization") || "";
 
       const stream = new ReadableStream({
         start: (controller) => {
@@ -235,7 +238,8 @@ export class MCPSession {
             let allTools = Array.from(publicToolMap.values());
 
             // --- Access-Aware Discovery (Private Layer) ---
-            const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || "";
+            // 🌟 核心逻辑：会话全生命周期身份感知 (Session-wide identity awareness)
+            const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || this.storedAuthHeader || "";
             const rawKey = authHeader.replace("Bearer ", "").trim();
             if (rawKey.startsWith("us-")) {
                 const { hashKey } = await import("../utils/auth");
@@ -261,13 +265,12 @@ export class MCPSession {
                                 };
                             } catch (jsonErr) {
                                 // 2. 回退：作为原始 Markdown 解析 (Fallback to Markdown parsing)
-                                const SkillParserLocal = (await import("../engine/parser")).SkillParser;
-                                const tool = SkillParserLocal.parse(raw);
+                                const tool = SkillParser.parse(raw);
                                 const baseName = tool.name || key.name.split(':').pop();
                                 return {
                                     name: `${userUid}.${baseName}`, // 🌟 统一为 owner.skill 格式
                                     description: tool.description || "Private tool (parsed from Markdown)",
-                                    inputSchema: tool.config?.parameters || tool.parameters || { type: "object", properties: {} }
+                                    inputSchema: tool.parameters || { type: "object", properties: {} }
                                 };
                             }
                         } catch (e) {
