@@ -31,14 +31,11 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
         if (key.startsWith("SECRETS.")) {
             const secretName = key.split(".")[1];
             
-            // 🔐 身份优先原则：优先使用用户配置的私有 Key (User Secret Priority)
+            // 🔐 身份强制原则：仅限用户配置的私有 Key (User Secret Only)
+            // 逻辑：如果用户未配置该 Key，则不回退到系统全局 Key，以保障用户隐私和厂商成本。
             if (userSecrets[secretName]) return userSecrets[secretName];
             
-            // 🌍 系统兜底：回退到网关全局配置 (System Fallback)
-            if (secretName === "TAVILY_API_KEY") return env.TAVILY_API_KEY;
-            if (secretName === "JINA_API_KEY") return env.JINA_API_KEY;
-            if (secretName === "MAPBOX_API_KEY") return env.MAPBOX_API_KEY;
-            return defaultValue || `[SECRET_${secretName}_NOT_FOUND]`;
+            return defaultValue || `[MISSING_USER_SECRET_${secretName}]`;
         }
         const val = params[key] !== undefined ? params[key] : defaultValue;
         if (val !== undefined) consumedParams.add(key);
