@@ -164,8 +164,19 @@ export async function executeSkill(impl: any, params: any, env: Env) {
  */
 function evaluateJsonPath(obj: any, path: string) {
     if (!path) return undefined;
-    const cleanPath = path.trim().startsWith('.') ? path.trim().slice(1) : path.trim();
-    const parts = cleanPath.split(/[\.\[\]]+/).filter(Boolean);
+    
+    // 🌟 增强：剔除 JSONPath 开头的 $ 或 $. (Enhanced: remove $. prefix)
+    let cleanPath = path.trim();
+    if (cleanPath.startsWith('$')) {
+        cleanPath = cleanPath.slice(1);
+    }
+    if (cleanPath.startsWith('.')) {
+        cleanPath = cleanPath.slice(1);
+    }
+    
+    if (!cleanPath) return obj;
+
+    const parts = cleanPath.split(/[\.\[\]'"]+/).filter(Boolean);
     let current = obj;
     for (const part of parts) {
         if (current === undefined || current === null) return undefined;
