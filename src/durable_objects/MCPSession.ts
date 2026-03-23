@@ -140,6 +140,21 @@ export class MCPSession {
           const postEndpoint = `/v1/mcp/messages?session_id=${this.ctx.id.toString()}`;
           const initMessage = `event: endpoint\ndata: ${postEndpoint}\n\n`;
           controller.enqueue(new TextEncoder().encode(initMessage));
+
+          // 🌟 10 秒心跳机制：防止连接挂起并强制刷新缓冲区 (10s heartbeat to prevent hanging and flush buffer)
+          const heartbeatTimer = setInterval(() => {
+              if (this.controller) {
+                  try {
+                      this.controller.enqueue(new TextEncoder().encode(":\n\n")); // SSE 注释心跳 (SSE comment heartbeat)
+                  } catch (e) {
+                      clearInterval(heartbeatTimer);
+                  }
+              } else {
+                  clearInterval(heartbeatTimer);
+              }
+          }, 10000);
+          
+          // 在 ctx.waitUntil 中记录计时器，防止 DO 被意外回收 (Wait until helper can track timers if needed)
         },
         cancel: () => {
           this.controller = null;
@@ -209,95 +224,114 @@ export class MCPSession {
     // --- 🛠️ 业务逻辑执行区 (Business Logic Execution) ---
     if (method === "tools/list") {
         try {
-            // 🌟 核心修复：使用 Map 来确保公共工具名称的唯一性 (Use Map to guarantee unique public tool names)
+            // 🌟 核心修复：使用 Map 去重 (Use Map to deduplicate tools)
             const publicToolMap = new Map();
 
-            // 1. 先加载兜底的基础工具 (Load fallback base tools first - Lowest Priority)
-            FALLBACK_TOOLS.forEach(tool => {
-                publicToolMap.set(tool.name, tool);
-            });
+            // 🌟 核心：归一化处理函数 (Normalization helper to unify prefixes)
+            const normalizeCoreName = (name: string) => name.startsWith("uniskill_") ? name : `uniskill_${name}`;
 
-            // 2. 尝试拉取全球 KV 缓存，如果同名则覆盖兜底版本 (Fetch global KV cache, override fallbacks if names collide - Higher Priority)
-            const cachedToolsStr = await this.env.UNISKILL_KV.get("mcp_registry:tools_cache");
-            if (cachedToolsStr) {
-                try { 
+            // 1. 安全加载兜底工具 (Safely load fallback base tools)
+            if (typeof FALLBACK_TOOLS !== 'undefined' && Array.isArray(FALLBACK_TOOLS)) {
+                FALLBACK_TOOLS.forEach(tool => {
+                    if (tool && tool.name) {
+                        const normName = normalizeCoreName(tool.name);
+                        publicToolMap.set(normName, { ...tool, name: normName });
+                    }
+                });
+            }
+
+            // 2. 尝试拉取全球 KV 缓存并覆盖兜底 (Fetch KV cache and override fallbacks safely)
+            try {
+                const cachedToolsStr = await this.env.UNISKILL_KV.get("mcp_registry:tools_cache");
+                if (cachedToolsStr) {
                     const cachedTools = JSON.parse(cachedToolsStr); 
                     if (Array.isArray(cachedTools)) {
                         cachedTools.forEach(tool => {
                             if (tool && tool.name) {
-                                publicToolMap.set(tool.name, tool); // 👈 覆盖操作 (Override operation)
+                                const normName = normalizeCoreName(tool.name);
+                                // 🌟 核心：高优先级通过归一化键名覆盖 (High priority override via normalized key)
+                                publicToolMap.set(normName, { ...tool, name: normName });
                             }
                         });
                     }
-                } catch (parseErr) {
-                    console.warn("[DO] Failed to parse tools_cache from KV", parseErr);
                 }
+            } catch (kvErr) {
+                console.warn("[DO] Failed to fetch or parse public tools from KV:", kvErr);
+                // 即使 KV 挂了，也不要中断，继续往下走 (Don't throw, continue execution)
             }
 
-            // 将 Map 转换回数组 (Convert Map back to array)
             let allTools = Array.from(publicToolMap.values());
 
-            // --- Access-Aware Discovery (Private Layer) ---
-            // 🌟 核心逻辑：会话全生命周期身份感知 (Session-wide identity awareness)
-            const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || this.storedAuthHeader || "";
-            const rawKey = authHeader.replace("Bearer ", "").trim();
-            if (rawKey.startsWith("us-")) {
-                const { hashKey } = await import("../utils/auth");
-                const keyHash = await hashKey(rawKey);
-                const { getUserUid } = await import("../utils/billing");
-                const userUid = await getUserUid(this.env.UNISKILL_KV, keyHash, this.env);
+            // 3. 隔离处理私有工具 (Isolate private tools fetching)
+            try {
+                // 安全获取 authHeader (Safely get authHeader, avoid undefined crashes)
+                // 🌟 核心逻辑：保留会话全生命周期身份感知 (Keep session-wide identity awareness)
+                const authHeader = payload?.authHeader || originalRequest.headers.get("Authorization") || this.storedAuthHeader || "";
+                const rawKey = authHeader.replace("Bearer ", "").trim();
+                
+                if (rawKey.startsWith("us-")) {
+                    const { hashKey } = await import("../utils/auth");
+                    const keyHash = await hashKey(rawKey);
+                    const { getUserUid } = await import("../utils/billing");
+                    const userUid = await getUserUid(this.env.UNISKILL_KV, keyHash, this.env);
 
-                if (userUid) {
-                    const list = await this.env.UNISKILL_KV.list({ prefix: `skill:private:${userUid}:` });
-                    const fetchPromises = list.keys.map(async (key: any) => {
-                        const raw = await this.env.UNISKILL_KV.get(key.name);
-                        if (!raw) return null;
+                    if (userUid) {
+                        const list = await this.env.UNISKILL_KV.list({ prefix: `skill:private:${userUid}:` });
+                        const fetchPromises = list.keys.map(async (key: any) => {
+                            const raw = await this.env.UNISKILL_KV.get(key.name);
+                            if (!raw) return null;
 
-                        try {
-                            // 1. 尝试作为大一统 JSON 解析 (Try parsing as Unified JSON)
                             try {
-                                const tool = JSON.parse(raw);
-                                const baseName = tool.id || key.name.split(':').pop();
-                                return {
-                                    name: `${userUid}.${baseName}`, // 🌟 统一为 owner.skill 格式
-                                    description: tool.meta?.description || tool.description || "Private tool",
-                                    inputSchema: tool.config?.parameters || tool.meta?.parameters || tool.parameters || { type: "object", properties: {} }
-                                };
-                            } catch (jsonErr) {
-                                // 2. 回退：作为原始 Markdown 解析 (Fallback to Markdown parsing)
-                                const tool = SkillParser.parse(raw);
-                                const baseName = tool.name || key.name.split(':').pop();
-                                return {
-                                    name: `${userUid}.${baseName}`, // 🌟 统一为 owner.skill 格式
-                                    description: tool.description || "Private tool (parsed from Markdown)",
-                                    inputSchema: tool.parameters || { type: "object", properties: {} }
-                                };
+                                // 1. 尝试作为大一统 JSON 解析 (Try parsing as Unified JSON)
+                                try {
+                                    const toolRaw = JSON.parse(raw);
+                                    const baseName = toolRaw.id || key.name.split(':').pop();
+                                    return {
+                                        name: `${userUid}.${baseName}`, 
+                                        description: toolRaw.meta?.description || toolRaw.description || "Private tool",
+                                        inputSchema: toolRaw.config?.parameters || toolRaw.meta?.parameters || toolRaw.parameters || { type: "object", properties: {} }
+                                    };
+                                } catch (jsonErr) {
+                                    // 2. 回退：作为原始 Markdown 解析 (Fallback to Markdown parsing)
+                                    const toolSpec = SkillParser.parse(raw);
+                                    const baseName = toolSpec.name || key.name.split(':').pop();
+                                    return {
+                                        name: `${userUid}.${baseName}`,
+                                        description: toolSpec.description || "Private tool (parsed from Markdown)",
+                                        inputSchema: toolSpec.parameters || { type: "object", properties: {} }
+                                    };
+                                }
+                            } catch (parseErr) {
+                                return null; // 忽略单个私有工具解析错误 (Ignore individual private tool parse error)
                             }
-                        } catch (e) {
-                            console.error(`[MCPSession] Failed to process tool ${key.name}:`, e);
-                            return null;
-                        }
-                    });
-                    const privateTools = (await Promise.all(fetchPromises)).filter(Boolean);
-                    
-                    // 私有工具合并逻辑 (Merge private tools)
-                    for (const pt of privateTools) {
-                        const ptName = (pt as any).name;
-                        // 寻找并替换，如果没有则追加 (Find and replace, or append if not exists)
-                        const index = allTools.findIndex(t => t.name === ptName);
-                        if (index !== -1) {
-                            allTools[index] = pt;
-                        } else {
-                            allTools.push(pt);
+                        });
+                        
+                        const privateTools = (await Promise.all(fetchPromises)).filter(Boolean);
+                        
+                        // 合并私有工具 (Merge private tools)
+                        for (const pt of privateTools) {
+                            const ptName = (pt as any).name;
+                            const index = allTools.findIndex(t => t.name === ptName);
+                            if (index !== -1) {
+                                allTools[index] = pt;
+                            } else {
+                                allTools.push(pt);
+                            }
                         }
                     }
                 }
+            } catch (authErr) {
+                console.error("[DO] Private tools auth/fetch error. Skipping private tools.", authErr);
+                // 鉴权或私有库读取失败，直接忽略，保证公共工具能返回 (If auth fails, just skip so public tools can still be returned)
             }
 
+            // 最终赋值 (Final assignment)
             result = { tools: allTools };
+
         } catch (err) {
-            console.error("[DO] Tool list error:", err);
-            result = { tools: FALLBACK_TOOLS }; // 极端情况下的最终兜底 (Final fallback for extreme cases)
+            console.error("[DO] Critical error in tools/list. Falling back to basics.", err);
+            // 终极保命兜底，确保长连接一定能收到回包 (Ultimate fallback to ensure SSE response is sent)
+            result = { tools: typeof FALLBACK_TOOLS !== 'undefined' ? FALLBACK_TOOLS : [] }; 
         }
     }
     else if (method === "tools/call") {
@@ -372,6 +406,7 @@ export class MCPSession {
     if (id !== undefined) {
         const responsePayload = { jsonrpc: "2.0", id: id, result: result };
         const sseMessage = `event: message\ndata: ${JSON.stringify(responsePayload)}\n\n`;
+        console.log(`[DO] 📤 Enqueueing SSE message for Request ID: ${id}`);
         this.controller.enqueue(new TextEncoder().encode(sseMessage));
     }
 
