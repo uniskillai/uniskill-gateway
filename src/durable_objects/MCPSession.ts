@@ -206,13 +206,33 @@ export class MCPSession {
     // --- 🛠️ 业务逻辑执行区 (Business Logic Execution) ---
     if (method === "tools/list") {
         try {
+            // 🌟 核心修复：使用 Map 来确保公共工具名称的唯一性 (Use Map to guarantee unique public tool names)
+            const publicToolMap = new Map();
+
+            // 1. 先加载兜底的基础工具 (Load fallback base tools first - Lowest Priority)
+            FALLBACK_TOOLS.forEach(tool => {
+                publicToolMap.set(tool.name, tool);
+            });
+
+            // 2. 尝试拉取全球 KV 缓存，如果同名则覆盖兜底版本 (Fetch global KV cache, override fallbacks if names collide - Higher Priority)
             const cachedToolsStr = await this.env.UNISKILL_KV.get("mcp_registry:tools_cache");
-            let allTools: any[] = [];
             if (cachedToolsStr) {
-                try { allTools = JSON.parse(cachedToolsStr); } catch { }
+                try { 
+                    const cachedTools = JSON.parse(cachedToolsStr); 
+                    if (Array.isArray(cachedTools)) {
+                        cachedTools.forEach(tool => {
+                            if (tool && tool.name) {
+                                publicToolMap.set(tool.name, tool); // 👈 覆盖操作 (Override operation)
+                            }
+                        });
+                    }
+                } catch (parseErr) {
+                    console.warn("[DO] Failed to parse tools_cache from KV", parseErr);
+                }
             }
-            // 基础公共工具 = 全局缓存 + fallback
-            allTools = [...allTools, ...FALLBACK_TOOLS];
+
+            // 将 Map 转换回数组 (Convert Map back to array)
+            let allTools = Array.from(publicToolMap.values());
 
             // --- Access-Aware Discovery (Private Layer) ---
             const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || "";
@@ -237,17 +257,17 @@ export class MCPSession {
                                 return {
                                     name: `${userUid}.${baseName}`, // 🌟 统一为 owner.skill 格式
                                     description: tool.meta?.description || tool.description || "Private tool",
-                                    // 🌟 核心修复：优先从 config.parameters 提取最新的 Schema
-                                    inputSchema: tool.config?.parameters || tool.parameters || tool.meta?.parameters || { type: "object", properties: {} }
+                                    inputSchema: tool.config?.parameters || tool.meta?.parameters || tool.parameters || { type: "object", properties: {} }
                                 };
                             } catch (jsonErr) {
                                 // 2. 回退：作为原始 Markdown 解析 (Fallback to Markdown parsing)
-                                const tool = SkillParser.parse(raw);
+                                const SkillParserLocal = (await import("../engine/parser")).SkillParser;
+                                const tool = SkillParserLocal.parse(raw);
                                 const baseName = tool.name || key.name.split(':').pop();
                                 return {
                                     name: `${userUid}.${baseName}`, // 🌟 统一为 owner.skill 格式
                                     description: tool.description || "Private tool (parsed from Markdown)",
-                                    inputSchema: tool.parameters || { type: "object", properties: {} }
+                                    inputSchema: tool.config?.parameters || tool.parameters || { type: "object", properties: {} }
                                 };
                             }
                         } catch (e) {
@@ -257,16 +277,15 @@ export class MCPSession {
                     });
                     const privateTools = (await Promise.all(fetchPromises)).filter(Boolean);
                     
-                    // Merge unique tools (Private tools hide public ones with same name if overridden)
-                    const existingNames = new Set(allTools.map(t => t.name));
+                    // 私有工具合并逻辑 (Merge private tools)
                     for (const pt of privateTools) {
-                        if (!existingNames.has((pt as any).name)) {
-                            allTools.push(pt);
-                            existingNames.add((pt as any).name);
+                        const ptName = (pt as any).name;
+                        // 寻找并替换，如果没有则追加 (Find and replace, or append if not exists)
+                        const index = allTools.findIndex(t => t.name === ptName);
+                        if (index !== -1) {
+                            allTools[index] = pt;
                         } else {
-                            // Find and replace with private tool
-                            const index = allTools.findIndex(t => t.name === (pt as any).name);
-                            if (index !== -1) allTools[index] = pt;
+                            allTools.push(pt);
                         }
                     }
                 }
@@ -274,7 +293,8 @@ export class MCPSession {
 
             result = { tools: allTools };
         } catch (err) {
-            result = { tools: FALLBACK_TOOLS };
+            console.error("[DO] Tool list error:", err);
+            result = { tools: FALLBACK_TOOLS }; // 极端情况下的最终兜底 (Final fallback for extreme cases)
         }
     }
     else if (method === "tools/call") {
