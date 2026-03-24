@@ -83,17 +83,14 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
 
     // Merge and Resolve Headers
     const rawHeaders = { ...(impl.headers || {}), ...(impl.request?.headers || {}) };
-    console.log(`[Executor][DEBUG] Raw headers from impl:`, JSON.stringify(rawHeaders).substring(0, 200));
     for (const [k, v] of Object.entries(rawHeaders)) {
         if (typeof v === 'string') {
             headers[k] = v.replace(placeholderRegex, (match: string, key: string, defaultValue: string) => {
                 const val = resolveValue(key, defaultValue);
-                console.log(`[Executor][DEBUG] Resolving header placeholder {{${key}}}: ${val !== undefined ? String(val).substring(0, 15) + '...' : 'UNRESOLVED'}`);
                 return val !== undefined ? String(val) : match;
             });
         }
     }
-    console.log(`[Executor][DEBUG] Final Authorization header: ${headers['Authorization']?.substring(0, 30)}...`);
 
     if (impl.api_key) {
         let finalApiKey = impl.api_key;
