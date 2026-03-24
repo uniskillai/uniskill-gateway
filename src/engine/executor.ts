@@ -150,14 +150,8 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
                 targetUrl += targetUrl.includes('?') ? `&${queryParams}` : `?${queryParams}`;
             }
         } else {
-            // Priority: Explicit body template > All params
-            const bodyTemplate = impl.body || impl.request?.body;
-            if (bodyTemplate) {
-                // Logic: If there is a template, we just pass it (assuming placeholders already covered)
-                // BUT for now, most skills just dump params. 
-                // Let's stick to the Dumping params for safety unless it's a specific format.
-                fetchOptions.body = JSON.stringify(params);
-            } else if (params) {
+            // POST/PATCH/PUT: send user params as JSON body
+            if (params && Object.keys(params).length > 0) {
                 fetchOptions.body = JSON.stringify(params);
             }
         }
@@ -179,7 +173,8 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
             } else {
                 try {
                     const parsedError = JSON.parse(errorText);
-                    errorMessage = parsedError.detail || parsedError.message || parsedError.error || errorMessage;
+                    let rawMessage = parsedError.detail || parsedError.message || parsedError.error || errorMessage;
+                    errorMessage = typeof rawMessage === 'object' ? JSON.stringify(rawMessage) : String(rawMessage);
                 } catch (e) {
                     errorMessage = errorText || errorMessage;
                 }
