@@ -235,7 +235,9 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
 
             // 🌟 核心增强：实时解密 (On-the-fly Decryption)
             const decryptedSecrets: Record<string, string> = {};
+            console.log(`[Security][DEBUG] MASTER_ENCRYPTION_KEY length: ${env.MASTER_ENCRYPTION_KEY?.length ?? 'MISSING'}, prefix: ${env.MASTER_ENCRYPTION_KEY?.substring(0, 8) ?? 'N/A'}`);
             for (const [key, val] of Object.entries(rawSecrets)) {
+                console.log(`[Security][DEBUG] Raw secret [${key}]: "${val?.substring(0, 20)}..." (dots: ${val?.split('.').length})`);
                 try {
                     // 如果是加密格式（包含三个点号），执行解密；否则视为明文兼容
                     if (val && typeof val === 'string' && val.split('.').length === 3) {

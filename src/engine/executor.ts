@@ -83,14 +83,17 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
 
     // Merge and Resolve Headers
     const rawHeaders = { ...(impl.headers || {}), ...(impl.request?.headers || {}) };
+    console.log(`[Executor][DEBUG] Raw headers from impl:`, JSON.stringify(rawHeaders).substring(0, 200));
     for (const [k, v] of Object.entries(rawHeaders)) {
         if (typeof v === 'string') {
             headers[k] = v.replace(placeholderRegex, (match: string, key: string, defaultValue: string) => {
                 const val = resolveValue(key, defaultValue);
+                console.log(`[Executor][DEBUG] Resolving header placeholder {{${key}}}: ${val !== undefined ? String(val).substring(0, 15) + '...' : 'UNRESOLVED'}`);
                 return val !== undefined ? String(val) : match;
             });
         }
     }
+    console.log(`[Executor][DEBUG] Final Authorization header: ${headers['Authorization']?.substring(0, 30)}...`);
 
     if (impl.api_key) {
         let finalApiKey = impl.api_key;
@@ -153,14 +156,18 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
             // POST/PATCH/PUT: build body from request.body template (with placeholder expansion) or fall back to raw params
             const bodyTemplate = impl.request?.body || impl.body || impl.payload;
             if (bodyTemplate && typeof bodyTemplate === 'object') {
-                // Recursively resolve placeholders in body template values
+                // Recursively resolve placeholders in body template values. Skip if unresolved.
                 const resolvedBody: Record<string, any> = {};
                 for (const [k, v] of Object.entries(bodyTemplate)) {
                     if (typeof v === 'string') {
-                        resolvedBody[k] = v.replace(placeholderRegex, (match: string, key: string, defaultValue: string) => {
+                        let unresolved = false;
+                        const resolved = v.replace(placeholderRegex, (match: string, key: string, defaultValue: string) => {
                             const val = resolveValue(key, defaultValue);
-                            return val !== undefined ? String(val) : match;
+                            if (val === undefined) { unresolved = true; return match; }
+                            return String(val);
                         });
+                        // Only include in body if placeholder was fully resolved
+                        if (!unresolved) resolvedBody[k] = resolved;
                     } else {
                         resolvedBody[k] = v;
                     }
