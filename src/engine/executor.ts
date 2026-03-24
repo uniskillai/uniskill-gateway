@@ -150,8 +150,23 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
                 targetUrl += targetUrl.includes('?') ? `&${queryParams}` : `?${queryParams}`;
             }
         } else {
-            // POST/PATCH/PUT: send user params as JSON body
-            if (params && Object.keys(params).length > 0) {
+            // POST/PATCH/PUT: build body from request.body template (with placeholder expansion) or fall back to raw params
+            const bodyTemplate = impl.request?.body || impl.body || impl.payload;
+            if (bodyTemplate && typeof bodyTemplate === 'object') {
+                // Recursively resolve placeholders in body template values
+                const resolvedBody: Record<string, any> = {};
+                for (const [k, v] of Object.entries(bodyTemplate)) {
+                    if (typeof v === 'string') {
+                        resolvedBody[k] = v.replace(placeholderRegex, (match: string, key: string, defaultValue: string) => {
+                            const val = resolveValue(key, defaultValue);
+                            return val !== undefined ? String(val) : match;
+                        });
+                    } else {
+                        resolvedBody[k] = v;
+                    }
+                }
+                fetchOptions.body = JSON.stringify(resolvedBody);
+            } else if (params && Object.keys(params).length > 0) {
                 fetchOptions.body = JSON.stringify(params);
             }
         }

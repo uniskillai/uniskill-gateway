@@ -248,6 +248,10 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
                     throw new Error(`Failed to decrypt secret ${key}. If you are running locally, please ensure MASTER_ENCRYPTION_KEY is configured in .dev.vars and restart wrangler.`);
                 }
             }
+            // 🔍 [DEBUG] Log decrypted secret prefixes for diagnostics (safe truncation)
+            for (const [k, v] of Object.entries(decryptedSecrets)) {
+                console.log(`[Security][DEBUG] Decrypted secret key "${k}": "${v.substring(0, 12)}..."`);
+            }
 
             try {
                 finalData = await executeSkill(implementation, params, env, decryptedSecrets, !isPrivate);
