@@ -27,6 +27,7 @@ function getCache(key: string) {
 export interface UserProfile {
     credits: number;
     tier: string;
+    username: string;
     updated_at: number;
 }
 
@@ -73,6 +74,7 @@ export async function getProfile(kv: KVNamespace, uid: string, env: any, keyHash
         profile = {
             credits: oldCredits ? parseFloat(oldCredits) : 0,
             tier: oldTier || "FREE",
+            username: "user", // Default for migrated legacy profiles
             updated_at: Date.now()
         };
         console.log(`[Migration] Migrated legacy data to profile for ${uid}`);
@@ -83,6 +85,7 @@ export async function getProfile(kv: KVNamespace, uid: string, env: any, keyHash
         profile = {
             credits: userData.credits || 0,
             tier: userData.tier || "FREE",
+            username: userData.username || "user",
             updated_at: Date.now()
         };
     }
@@ -134,14 +137,31 @@ export async function getUserUid(kv: KVNamespace, keyHash: string, env: any): Pr
     console.log(`[Identity] KV miss for UID map (hash: ...${keyHash.slice(-6)}), hitting DB.`);
     const userData = await fetchUserDataFromDB(keyHash, env);
     uid = userData.user_uid;
+    const username = userData.username || "anonymous";
 
     // 4. Write-back to KV for future requests (New format)
     if (uid && uid !== "anonymous") {
         await kv.put(SkillKeys.authHash(keyHash), uid, { expirationTtl: 86400 * 30 }); // Mapping is long-lived
         setCache(cacheKey, uid);
+        
+        // Also ensure profile exists in KV with username
+        const profile = await getProfile(kv, uid, env, keyHash);
+        if (profile.username !== username) {
+            profile.username = username;
+            await kv.put(SkillKeys.profile(uid), JSON.stringify(profile));
+            setCache(`profile:${uid}`, profile);
+        }
     }
 
     return uid;
+}
+
+/**
+ * Retrieves the username for a given UID, aiming for KV first.
+ */
+export async function getUsername(kv: KVNamespace, uid: string, env: any): Promise<string> {
+    const profile = await getProfile(kv, uid, env);
+    return profile.username || "user";
 }
 
 /**

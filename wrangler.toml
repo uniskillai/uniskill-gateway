@@ -69,3 +69,9 @@ bindings = [
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["MCPSession"]
+
+# ── Production Routes ───────────────────────────────────────
+[[routes]]
+pattern = "api.uniskill.ai"
+zone_name = "uniskill.ai"
+custom_domain = true

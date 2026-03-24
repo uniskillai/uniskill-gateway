@@ -50,6 +50,7 @@ export async function handleProvision(request: Request, env: Env): Promise<Respo
     const profile: UserProfile = {
         credits: initialCredits,
         tier: userTier,
+        username: "user",
         updated_at: Date.now()
     };
     await env.UNISKILL_KV.put(SkillKeys.profile(userUid), JSON.stringify(profile));
@@ -85,6 +86,7 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
     let oldKeyHash: string | undefined = undefined;
     let keyHash: string | undefined = undefined;
     let type: string | undefined = undefined;
+    let username: string | undefined = undefined;
 
     try {
         const body = await request.json() as any;
@@ -95,6 +97,7 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
         keyHash = body.key_hash || body.hash;
         oldKeyHash = body.old_key_hash || body.old_hash;
         type = body.type;
+        username = body.username;
 
         // 🌟 核心逻辑扩展：如果 type 是 skill_update 或 skill_activation，则执行技能存储逻辑
         // 🌟 核心逻辑扩展：如果 type 是 skill_update 或 skill_activation，则执行技能及密钥存储逻辑
@@ -158,6 +161,7 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
     const profile: UserProfile = {
         credits: Number(totalCredits ?? 0),
         tier: (newTier || "FREE").toUpperCase(),
+        username: username || "user",
         updated_at: Date.now()
     };
     
@@ -229,6 +233,7 @@ export async function handleTopup(request: Request, env: Env): Promise<Response>
     const profile: UserProfile = {
         credits: newBalance,
         tier: newTier || "FREE", // Fallback to FREE if not provided, though top-up usually keeps tier
+        username: "user",
         updated_at: Date.now()
     };
     

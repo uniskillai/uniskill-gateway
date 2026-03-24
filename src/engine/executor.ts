@@ -14,7 +14,7 @@ export interface Env {
     // ... 其他系统级环境变量
 }
 
-export async function executeSkill(impl: any, params: any, env: Env, userSecrets: Record<string, string> = {}) {
+export async function executeSkill(impl: any, params: any, env: Env, userSecrets: Record<string, string> = {}, isOfficial: boolean = false) {
     // ── Pre-process: Resolve technical fields ──
     const endpoint = impl.endpoint || impl.url;
     const method = (impl.method || impl.request?.method || "POST").toUpperCase();
@@ -46,23 +46,27 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
 
     // ── Pre-Resolution: Check for mandatory secrets ──
     // 逻辑：在正式渲染前预检 SECRETS 占位符，如果缺失则直接熔断 (Fail Fast)
-    const missingSecrets = [];
-    const fullText = targetUrl + JSON.stringify(impl.headers || {}) + JSON.stringify(impl.request?.headers || {});
+    const missingSecrets = new Set<string>();
+    const fullText = targetUrl + 
+                    JSON.stringify(impl.headers || {}) + 
+                    JSON.stringify(impl.request?.headers || {}) +
+                    (impl.api_key || ""); // 🌟 包含 api_key 预检 (Include api_key in pre-check)
+
     const matches = fullText.matchAll(placeholderRegex);
     for (const match of matches) {
         const key = match[1];
         if (key.startsWith("SECRETS.")) {
             const secretName = key.split(".")[1];
             if (!userSecrets[secretName]) {
-                missingSecrets.push(secretName);
+                missingSecrets.add(secretName);
             }
         }
     }
 
-    if (missingSecrets.length > 0) {
+    if (missingSecrets.size > 0) {
         return { 
             success: false, 
-            error: `Missing required private secrets: ${missingSecrets.join(", ")}. Please configure them in your UniSkill dashboard.` 
+            error: `Missing required private secrets: ${Array.from(missingSecrets).join(", ")}. Please configure them in your UniSkill dashboard.` 
         };
     }
 
@@ -89,19 +93,47 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
     }
 
     if (impl.api_key) {
+        let finalApiKey = impl.api_key;
+        
+        // 🌟 优先级原则：用户私有 Key > 系统全局 Key (User Secret > Global Env)
+        // 🔒 安全隔离：非官方技能严禁回退到系统 Key (No fallback for private skills)
         if (impl.api_key === "{{TAVILY_API_KEY}}") {
-            headers["Authorization"] = `Bearer ${env.TAVILY_API_KEY}`;
+            if (isOfficial) {
+                finalApiKey = userSecrets["TAVILY_API_KEY"] || env.TAVILY_API_KEY;
+            } else {
+                if (!userSecrets["TAVILY_API_KEY"]) {
+                    throw new Error("Private search tool requires your personal TAVILY_API_KEY. Please configure it in your UniSkill Secrets.");
+                }
+                finalApiKey = userSecrets["TAVILY_API_KEY"];
+            }
         } else if (impl.api_key === "{{JINA_API_KEY}}") {
-            headers["Authorization"] = `Bearer ${env.JINA_API_KEY}`;
+            if (isOfficial) {
+                finalApiKey = userSecrets["JINA_API_KEY"] || env.JINA_API_KEY;
+            } else {
+                if (!userSecrets["JINA_API_KEY"]) {
+                    throw new Error("Private scraping tool requires your personal JINA_API_KEY. Please configure it in your UniSkill Secrets.");
+                }
+                finalApiKey = userSecrets["JINA_API_KEY"];
+            }
         } else {
-            headers["Authorization"] = `Bearer ${impl.api_key}`;
+            // 通用占位符支持 (Generic placeholder support)
+            finalApiKey = finalApiKey.replace(placeholderRegex, (match: string, key: string, defaultValue: string) => {
+                const val = resolveValue(key, defaultValue);
+                return val !== undefined ? String(val) : match;
+            });
         }
+        
+        headers["Authorization"] = `Bearer ${finalApiKey}`;
     }
 
-    // ── Step 3: Request Execution ──
+    // ── Step 3: Request Execution (with Timeout) ──
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s 硬超时 (20s hard timeout)
+
     const fetchOptions: RequestInit = {
         method: method,
-        headers: headers
+        headers: headers,
+        signal: controller.signal as any
     };
 
     try {
@@ -177,8 +209,14 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
         return rawData;
 
     } catch (error: any) {
+        if (error.name === 'AbortError') {
+            console.error(`[Executor] Timeout: Upstream API failed to respond within 20s.`);
+            throw new Error("Upstream API request timed out. Please try again later.");
+        }
         console.error(`[Executor] Error: ${error.message}`);
         throw error;
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 

@@ -272,10 +272,11 @@ export class MCPSession {
                 if (rawKey.startsWith("us-")) {
                     const { hashKey } = await import("../utils/auth");
                     const keyHash = await hashKey(rawKey);
-                    const { getUserUid } = await import("../utils/billing");
+                    const { getUserUid, getUsername } = await import("../utils/billing");
                     const userUid = await getUserUid(this.env.UNISKILL_KV, keyHash, this.env);
+                    const username = await getUsername(this.env.UNISKILL_KV, userUid, this.env);
 
-                    if (userUid) {
+                    if (userUid && userUid.trim().length > 0) {
                         const list = await this.env.UNISKILL_KV.list({ prefix: `skill:private:${userUid}:` });
                         const fetchPromises = list.keys.map(async (key: any) => {
                             const raw = await this.env.UNISKILL_KV.get(key.name);
@@ -286,8 +287,14 @@ export class MCPSession {
                                 try {
                                     const toolRaw = JSON.parse(raw);
                                     const baseName = toolRaw.id || key.name.split(':').pop();
+
+                                    // 🌟 MCP Naming: Use username_skillname
+                                    // 逻辑：替换非法字符并确保长度符合规范 (^[a-zA-Z0-9_-]{1,64}$)
+                                    const safeUsername = username.replace(/[^a-zA-Z0-9_-]/g, '_');
+                                    const mcpName = `${safeUsername}_${baseName}`.slice(0, 64);
+
                                     return {
-                                        name: `${userUid}__${baseName}`, 
+                                        name: mcpName, 
                                         description: toolRaw.meta?.description || toolRaw.description || "Private tool",
                                         inputSchema: toolRaw.config?.parameters || toolRaw.meta?.parameters || toolRaw.parameters || { type: "object", properties: {} }
                                     };
@@ -295,8 +302,12 @@ export class MCPSession {
                                     // 2. 回退：作为原始 Markdown 解析 (Fallback to Markdown parsing)
                                     const toolSpec = SkillParser.parse(raw);
                                     const baseName = toolSpec.name || key.name.split(':').pop();
+                                    
+                                    const safeUsername = username.replace(/[^a-zA-Z0-9_-]/g, '_');
+                                    const mcpName = `${safeUsername}_${baseName}`.slice(0, 64);
+
                                     return {
-                                        name: `${userUid}__${baseName}`,
+                                        name: mcpName,
                                         description: toolSpec.description || "Private tool (parsed from Markdown)",
                                         inputSchema: toolSpec.parameters || { type: "object", properties: {} }
                                     };
@@ -335,16 +346,28 @@ export class MCPSession {
         }
     }
     else if (method === "tools/call") {
-        const toolName = params.name; // e.g., "uniskill__weather" or "owner_uid__skill_name"
         const toolArguments = params.arguments || {};
+        const toolName = params.name;
         // 🌟 核心修复：补全会话身份感应 (Fix: Ensure session identity persistence)
         const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || this.storedAuthHeader || "";
+        
+        // 🌟 解析重构后的工具名：username_skillname
+        // 关键逻辑：如果是私有工具，我们通过当前 Session 的 UID 来绑定身份。
+        // 由于 skill_name 是全局唯一的，这里的 username 主要用于展示和符合 MCP 规范。
+        const isOfficial = !toolName.includes('_') || toolName.startsWith('uniskill_');
+        // 如果是个人工具，其格式为 username_skillname，我们取第一个 _ 之后的所有内容作为真实的 skill_name
+        const actualSkillName = isOfficial ? toolName : toolName.substring(toolName.indexOf('_') + 1);
+        
+        // 身份锁定：通过请求携带的 Token 获取当前调用者的 UID
+        const ownerUid = isOfficial ? "public" : (await this.getCallerUid(payload, originalRequest));
 
-        // 🌟 1. 智能拆解命名空间 (Parse namespace intelligently using double underscore)
-        const nameParts = toolName.split('__');
-        const isPrivate = nameParts.length > 1;
-        const actualSkillName = isPrivate ? nameParts[1] : toolName;
-        const ownerUid = isPrivate ? nameParts[0] : "public";
+        // 🔒 安全拦截：私有工具必须具备合法的身份会话
+        if (!isOfficial && (!ownerUid || ownerUid === "public")) {
+            return {
+                content: [{ type: "text", text: `[Gateway Error] Private tool execution failed: Identity lost or malformed tool name.` }],
+                isError: true
+            };
+        }
 
         let finalOutput = "";
         let isError = false;
@@ -412,5 +435,19 @@ export class MCPSession {
     }
 
     return true;
+  }
+
+  /**
+   * Helper to resolve the calling user's UID from the session or request.
+   */
+  private async getCallerUid(payload: any, originalRequest: Request): Promise<string> {
+    const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || this.storedAuthHeader || "";
+    if (authHeader.startsWith("Bearer us-")) {
+        const { hashKey } = await import("../utils/auth");
+        const keyHash = await hashKey(authHeader.replace("Bearer ", "").trim());
+        const { getUserUid } = await import("../utils/billing");
+        return await getUserUid(this.env.UNISKILL_KV, keyHash, this.env);
+    }
+    return "public";
   }
 }

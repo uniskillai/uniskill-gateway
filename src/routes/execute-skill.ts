@@ -250,7 +250,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             }
 
             try {
-                finalData = await executeSkill(implementation, params, env, decryptedSecrets);
+                finalData = await executeSkill(implementation, params, env, decryptedSecrets, !isPrivate);
             } catch (execErr: any) {
                 return errorResponse(execErr.message, 502);
             }
