@@ -4,6 +4,8 @@
 
 import { handleExecuteSkill } from "../routes/execute-skill";
 import { SkillParser } from "../engine/parser";
+import { hashKey } from "../utils/auth";
+import { getUserUid, getUsername } from "../utils/billing";
 
 /**
  * 逻辑：网关级数据防腐层 - 强制将任何奇葩数据转化为 MCP 兼容的纯文本
@@ -270,9 +272,7 @@ export class MCPSession {
                 const rawKey = authHeader.replace("Bearer ", "").trim();
                 
                 if (rawKey.startsWith("us-")) {
-                    const { hashKey } = await import("../utils/auth");
                     const keyHash = await hashKey(rawKey);
-                    const { getUserUid, getUsername } = await import("../utils/billing");
                     const userUid = await getUserUid(this.env.UNISKILL_KV, keyHash, this.env);
                     const username = await getUsername(this.env.UNISKILL_KV, userUid, this.env);
 
@@ -351,33 +351,42 @@ export class MCPSession {
         // 🌟 核心修复：补全会话身份感应 (Fix: Ensure session identity persistence)
         const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || this.storedAuthHeader || "";
         
-        // 🌟 解析重构后的工具名：username_skillname
-        // 关键逻辑：如果是私有工具，我们通过当前 Session 的 UID 来绑定身份。
-        // 由于 skill_name 是全局唯一的，这里的 username 主要用于展示和符合 MCP 规范。
-        const isOfficial = !toolName.includes('_') || toolName.startsWith('uniskill_');
-        // 如果是个人工具，其格式为 username_skillname，我们取第一个 _ 之后的所有内容作为真实的 skill_name
-        const actualSkillName = isOfficial ? toolName : toolName.substring(toolName.indexOf('_') + 1);
-        
-        // 身份锁定：通过请求携带的 Token 获取当前调用者的 UID
-        const ownerUid = isOfficial ? "public" : (await this.getCallerUid(payload, originalRequest));
-
-        // 🔒 安全拦截：私有工具必须具备合法的身份会话
-        if (!isOfficial && (!ownerUid || ownerUid === "public")) {
-            return {
-                content: [{ type: "text", text: `[Gateway Error] Private tool execution failed: Identity lost or malformed tool name.` }],
-                isError: true
-            };
-        }
-
         let finalOutput = "";
         let isError = false;
 
         try {
+            // 🌟 核心修复：更鲁棒的工具名解析 Logic
+            // 获取当前调用者的身份 (Get identity of the caller)
+            const callerUid = await this.getCallerUid(payload, originalRequest);
+            const username = callerUid !== "public" ? await getUsername(this.env.UNISKILL_KV, callerUid, this.env) : "public";
+            const safeUsername = username.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const prefix = `${safeUsername}_`;
+
+            let actualSkillName = toolName;
+            let isOfficial = toolName.startsWith('uniskill_');
+
+            // 如果是以当前用户前缀开头的，则一定是私有工具 (If it starts with user prefix, it's private)
+            if (toolName.startsWith(prefix)) {
+                actualSkillName = toolName.substring(prefix.length);
+                isOfficial = false;
+            } else if (!isOfficial) {
+                // 如果没有前缀也不是官方开头，则尝试作为旧版私有工具 ID 处理
+                // (If no prefix and not official, treat as legacy private tool ID)
+                isOfficial = false;
+            }
+
+            // 🔒 安全拦截：私有工具必须具备合法的身份会话
+            if (!isOfficial && (!callerUid || callerUid === "public")) {
+                return {
+                    content: [{ type: "text", text: `[Gateway Error] Private tool execution failed: Identity lost or unauthorized access.` }],
+                    isError: true
+                };
+            }
+
             const executeUrl = new URL(originalRequest.url);
             executeUrl.pathname = `/v1/execute`;
 
             // 🌟 2. 组装绝对严谨的底层信封 (Assemble strict internal envelope)
-            // 双重保险：同时塞入 payload 和 params，彻底防止 "最后一公里" 丢包
             const internalRequest = new Request(executeUrl.toString(), {
                 method: "POST",
                 headers: {
@@ -387,7 +396,7 @@ export class MCPSession {
                 body: JSON.stringify({
                     skill_name: actualSkillName,
                     skill_id: toolName, 
-                    user_uid: ownerUid,
+                    user_uid: isOfficial ? "public" : callerUid,
                     payload: toolArguments,            
                     params: toolArguments              
                 })
@@ -443,9 +452,7 @@ export class MCPSession {
   private async getCallerUid(payload: any, originalRequest: Request): Promise<string> {
     const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || this.storedAuthHeader || "";
     if (authHeader.startsWith("Bearer us-")) {
-        const { hashKey } = await import("../utils/auth");
         const keyHash = await hashKey(authHeader.replace("Bearer ", "").trim());
-        const { getUserUid } = await import("../utils/billing");
         return await getUserUid(this.env.UNISKILL_KV, keyHash, this.env);
     }
     return "public";
