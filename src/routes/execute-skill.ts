@@ -243,9 +243,9 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
                     } else {
                         decryptedSecrets[key] = val;
                     }
-                } catch (e) {
+                } catch (e: any) {
                     console.error(`[Security] Failed to decrypt secret [${key}] for ${callerUid}:`, e);
-                    decryptedSecrets[key] = `[DECRYPTION_FAILED_${key}]`;
+                    throw new Error(`Failed to decrypt secret ${key}. If you are running locally, please ensure MASTER_ENCRYPTION_KEY is configured in .dev.vars and restart wrangler.`);
                 }
             }
 

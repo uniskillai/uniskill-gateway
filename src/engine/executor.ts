@@ -179,7 +179,7 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
             } else {
                 try {
                     const parsedError = JSON.parse(errorText);
-                    errorMessage = parsedError.message || parsedError.error || errorMessage;
+                    errorMessage = parsedError.detail || parsedError.message || parsedError.error || errorMessage;
                 } catch (e) {
                     errorMessage = errorText || errorMessage;
                 }
