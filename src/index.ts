@@ -249,6 +249,7 @@ export default {
 
       // 路由：MCP SSE 握手端点 (Logic: Create a new stateful DO instance)
       if (cleanPath === "/v1/mcp/sse" && method === "GET") {
+        console.log(`[DEBUG] MCP SSE Handshake requested`);
         const id = env.MCP_SESSION.newUniqueId();
         const stub = env.MCP_SESSION.get(id);
         
@@ -260,6 +261,7 @@ export default {
       // 路由：MCP 消息接收端点 (Logic: Route to existing DO via session_id)
       if (cleanPath === "/v1/mcp/messages" && method === "POST") {
         const sessionId = url.searchParams.get("session_id");
+        console.log(`[DEBUG] MCP Message received. session_id=${sessionId}`);
         if (!sessionId) {
           return errorResponse("Missing session_id in URL", 400);
         }
@@ -269,6 +271,7 @@ export default {
           const stub = env.MCP_SESSION.get(doId);
           return await stub.fetch(request);
         } catch (e) {
+          console.error(`[DEBUG] MCP Message fetch failure:`, e);
           return errorResponse("Invalid session_id", 400);
         }
       }

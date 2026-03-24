@@ -13,6 +13,8 @@ main = "src/index.ts"
 # Logic: Ensures the worker uses the V8 engine features available on this date
 # 逻辑：确保 Worker 使用该日期及之前的 V8 引擎特性，保证向后兼容性
 compatibility_date = "2024-03-06"
+workers_dev = false
+preview_urls = false
 
 # Logic: Supporting natively implemented Node.js APIs
 # 逻辑：支持原生实现的 Node.js API

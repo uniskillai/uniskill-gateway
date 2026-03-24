@@ -220,8 +220,12 @@ export class MCPSession {
       throw new Error("No active SSE connection found for this session.");
     }
 
-    const { id, method, params } = payload;
-    let result: any = {};
+    const method = payload.method;
+    const params = payload.params || {};
+    const id = payload.id;
+    let result: any = null;
+
+    console.log(`[DO][DEBUG] Incoming Message: method=${method}, id=${id}`);
 
     // --- 🛠️ 业务逻辑执行区 (Business Logic Execution) ---
     if (method === "tools/list") {
@@ -358,21 +362,27 @@ export class MCPSession {
             // 🌟 核心修复：更鲁棒的工具名解析 Logic
             // 获取当前调用者的身份 (Get identity of the caller)
             const callerUid = await this.getCallerUid(payload, originalRequest);
+            console.log(`[DO][DEBUG] Caller UID: ${callerUid}`);
             const username = callerUid !== "public" ? await getUsername(this.env.UNISKILL_KV, callerUid, this.env) : "public";
+            console.log(`[DO][DEBUG] Resolved Username: ${username}`);
             const safeUsername = username.replace(/[^a-zA-Z0-9_-]/g, '_');
             const prefix = `${safeUsername}_`;
 
             let actualSkillName = toolName;
             let isOfficial = toolName.startsWith('uniskill_');
 
+            console.log(`[DO][DEBUG] Handling tool: ${toolName}, Official: ${isOfficial}, Prefix: ${prefix}`);
+
             // 如果是以当前用户前缀开头的，则一定是私有工具 (If it starts with user prefix, it's private)
             if (toolName.startsWith(prefix)) {
                 actualSkillName = toolName.substring(prefix.length);
                 isOfficial = false;
+                console.log(`[DO][DEBUG] Stripped prefix. Actual skill name: ${actualSkillName}`);
             } else if (!isOfficial) {
                 // 如果没有前缀也不是官方开头，则尝试作为旧版私有工具 ID 处理
                 // (If no prefix and not official, treat as legacy private tool ID)
                 isOfficial = false;
+                console.log(`[DO][DEBUG] No prefix match, treating as potentially legacy or unhandled: ${actualSkillName}`);
             }
 
             // 🔒 安全拦截：私有工具必须具备合法的身份会话
@@ -387,6 +397,7 @@ export class MCPSession {
             executeUrl.pathname = `/v1/execute`;
 
             // 🌟 2. 组装绝对严谨的底层信封 (Assemble strict internal envelope)
+            console.log(`[DO][DEBUG] Internal Request to /v1/execute: skill_name=${actualSkillName}, user_uid=${isOfficial ? "public" : callerUid}`);
             const internalRequest = new Request(executeUrl.toString(), {
                 method: "POST",
                 headers: {
@@ -403,7 +414,7 @@ export class MCPSession {
             });
 
             const response = await handleExecuteSkill(internalRequest, this.env, this.ctx as any); 
-            
+            console.log(`[DO][DEBUG] handleExecuteSkill response status: ${response.status}`);            
             if (!response.ok) {
                 const errorText = await response.text();
                 finalOutput = `[Gateway Error] ${response.status}: ${errorText}`;
@@ -439,8 +450,18 @@ export class MCPSession {
     if (id !== undefined) {
         const responsePayload = { jsonrpc: "2.0", id: id, result: result };
         const sseMessage = `event: message\ndata: ${JSON.stringify(responsePayload)}\n\n`;
-        console.log(`[DO] 📤 Enqueueing SSE message for Request ID: ${id}`);
-        this.controller.enqueue(new TextEncoder().encode(sseMessage));
+        
+        if (this.controller) {
+            try {
+                console.log(`[DO] 📤 Sending SSE message for Request ID: ${id}`);
+                this.controller.enqueue(new TextEncoder().encode(sseMessage));
+            } catch (sseErr) {
+                console.warn(`[DO] ❌ Failed to enqueue SSE message (likely closed):`, sseErr);
+                this.controller = null; // Clean up broken controller
+            }
+        } else {
+            console.warn(`[DO] ⚠️ Cannot send response for ID ${id}: SSE Controller is null`);
+        }
     }
 
     return true;
