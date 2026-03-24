@@ -286,13 +286,6 @@ export async function handleSyncSkill(request: Request, env: Env): Promise<Respo
             const privateKey = SkillKeys.private(user_uid, skill_name);
             await env.UNISKILL_KV.put(privateKey, JSON.stringify(manifest));
             console.log(`[Admin] Synced private skill to KV: ${privateKey}`);
-
-            // 🌟 密钥同步：存储加密后的技能专属密钥 (Skill-scoped secrets)
-            if (secrets && typeof secrets === 'object') {
-                const secretsKey = SkillKeys.skillSecrets(user_uid, skill_name);
-                await env.UNISKILL_KV.put(secretsKey, JSON.stringify(secrets));
-                console.log(`[Admin] Synced skill-scoped secrets for ${skill_name} via sync_skill`);
-            }
         } else if (lowerStatus === 'public' || lowerStatus === 'community' || lowerStatus === 'official') {
             const marketKey = SkillKeys.market(skill_name);
             await env.UNISKILL_KV.put(marketKey, JSON.stringify(manifest));
@@ -321,6 +314,13 @@ export async function handleSyncSkill(request: Request, env: Env): Promise<Respo
             // Trigger global refresh broadcast
             await env.UNISKILL_KV.put("mcp_broadcast:tools_changed", Date.now().toString());
             console.log(`[Admin] Rebuilt tools_cache and triggered broadcast for ${skill_name}`);
+        }
+
+        // 🌟 无论技能是公有还是私有，只要传了密钥，就必须同步存储 (Always sync skill-scoped secrets for execution)
+        if (secrets && typeof secrets === 'object') {
+            const secretsKey = SkillKeys.skillSecrets(user_uid, skill_name);
+            await env.UNISKILL_KV.put(secretsKey, JSON.stringify(secrets));
+            console.log(`[Admin] Synced skill-scoped secrets for ${skill_name} via sync_skill`);
         }
 
         return new Response(
