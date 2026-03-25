@@ -143,24 +143,26 @@ export class MCPSession {
           const initMessage = `event: endpoint\ndata: ${postEndpoint}\n\n`;
           controller.enqueue(new TextEncoder().encode(initMessage));
 
-          // 🌟 10 秒心跳机制：防止连接挂起并强制刷新缓冲区 (10s heartbeat to prevent hanging and flush buffer)
+          // 🌟 5 秒轻量化心跳：增强连接活跃度，防止 10s 级边缘拦截
           const heartbeatTimer = setInterval(() => {
               if (this.controller) {
                   try {
-                      this.controller.enqueue(new TextEncoder().encode(":\n\n")); // SSE 注释心跳 (SSE comment heartbeat)
+                      // 发送空注释作为心跳，保持 TCP 链路不断开
+                      this.controller.enqueue(new TextEncoder().encode(":\n\n")); 
                   } catch (e) {
+                      console.log(`[DO] 💓 Heartbeat failed, clearing timer.`);
                       clearInterval(heartbeatTimer);
                   }
               } else {
                   clearInterval(heartbeatTimer);
               }
-          }, 10000);
+          }, 5000);
           
           // 在 ctx.waitUntil 中记录计时器，防止 DO 被意外回收 (Wait until helper can track timers if needed)
         },
         cancel: () => {
           this.controller = null;
-          console.log(`[DO] ❌ SSE stream canceled.`);
+          console.log(`[DO] ❌ SSE stream canceled by client or network.`);
         }
       });
 
