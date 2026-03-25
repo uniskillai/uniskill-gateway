@@ -76,9 +76,15 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
         return val !== undefined ? encodeURIComponent(String(val)) : match;
     });
 
-    // ── Step 2: Authentication & Header Injection ──
+    // ── Step 2: Authentication & Header Injection (with Browser Spoofing) ──
+    // 🌟 核心改进：外交级默认 Headers (Disguise as a standard desk browser to avoid 502/403 blocks)
     let headers: Record<string, string> = {
-        "Content-Type": "application/json"
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive',
+        'Content-Type': 'application/json',
+        'X-UniSkill-Trace-ID': crypto.randomUUID()
     };
 
     // Merge and Resolve Headers
@@ -128,7 +134,7 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
 
     // ── Step 3: Request Execution (with Timeout) ──
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s 硬超时 (20s hard timeout)
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 🌟 10s 硬超时 (10s hard timeout)
 
     const fetchOptions: RequestInit = {
         method: method,
@@ -188,7 +194,13 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
             } else if (response.status === 404) {
                 errorMessage = "The requested resource could not be found on the upstream provider.";
             } else if (response.status >= 500) {
-                errorMessage = "The upstream provider is currently experiencing issues.";
+                // 🌟 核心防御：上游 HTML 报错页拦截 (Detect HTML error pages)
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('text/html')) {
+                    errorMessage = `Upstream Error (HTTP ${response.status}): Provider returned an HTML error page.`;
+                } else {
+                    errorMessage = "The upstream provider is currently experiencing issues.";
+                }
             } else {
                 try {
                     const parsedError = JSON.parse(errorText);
