@@ -39,7 +39,9 @@ export async function handleWeather(request: Request, _env: Env): Promise<Respon
 
         // Step 1: Geocoding — 城市名 → 经纬度 (Open-Meteo Geocoding API)
         const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`;
-        const geoRes = await fetch(geoUrl);
+        const geoRes = await fetch(geoUrl, {
+            headers: { "User-Agent": "UniSkill/1.0" }
+        });
         if (!geoRes.ok) throw new Error(`Geocoding API returned ${geoRes.status}`);
 
         const geoData: any = await geoRes.json();
@@ -54,7 +56,9 @@ export async function handleWeather(request: Request, _env: Env): Promise<Respon
 
         // Step 2: Weather — 经纬度 → 实时气象 (Open-Meteo Weather API)
         const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=1`;
-        const weatherRes = await fetch(weatherUrl);
+        const weatherRes = await fetch(weatherUrl, {
+            headers: { "User-Agent": "UniSkill/1.0" }
+        });
         if (!weatherRes.ok) throw new Error(`Weather API returned ${weatherRes.status}`);
 
         const weatherData: any = await weatherRes.json();
