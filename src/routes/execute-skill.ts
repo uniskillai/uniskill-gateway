@@ -26,8 +26,19 @@ const HARDCODED_NATIVE_SKILLS = new Set([
 ]);
 
 export async function handleExecuteSkill(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const startTime = Date.now(); // 🌟 开启性能追踪
+    const debugLog: any[] = [];   // 🌟 开启诊断 Trace
+    
     const url = new URL(request.url);
     const path = url.pathname;
+
+    // ── 审计核心变量插桩 ──
+    let callerUid: string | null = null;
+    let finalSkillName: string = "unknown";
+    let creditsPerCall: number = 0;
+    let displayName: string = "unknown";
+    let tags: string[] = [];
+    const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
 
     // ── Step 1: Extract 'key' from Header ──
     const authHeader = request.headers.get("Authorization") || "";
@@ -43,19 +54,14 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     let body: any = {};
     try {
         body = await request.json();
-    } catch {
-        // Allowed to be empty
-    }
+    } catch { /* Allowed to be empty */ }
 
     // Logic: Resolve skillName from path or body
     let skillName: string | undefined = body.skill_name || body.skill;
-    
-    // Fallback: Check if skillName is in the path (e.g. /v1/execute/uniskill_wiki)
     if (!skillName && path.startsWith("/v1/execute/") && path.split("/").length > 3) {
         skillName = path.split("/")[3];
     } 
     
-    // If not in path, check the body (required for /v1/execute)
     if (!skillName) {
         return errorResponse("Missing skill_name in path or body", 400);
     }
@@ -65,22 +71,21 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
 
     try {
         // ── Step 3: Identity & Billing Resolve ──
-        // 逻辑：1. 锁定调用者 UID (计费对象)；2. 锁定目标 UID (私有技能命名空间)
-        const callerUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
-        const targetUid = body.user_uid || callerUid; // 支持 MCP 路由解析出的 owner.skill
-        
+        callerUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
+        debugLog.push({ event: "auth_success", user: callerUid.slice(-6) });
+
+        const targetUid = body.user_uid || callerUid; 
         const profile = await getProfile(env.UNISKILL_KV, callerUid, env, keyHash);
-        
         const userTier = profile.tier;
         let currentCredits = profile.credits;
 
-        // ── Step 4: Skill Configuration Lookup (Multi-Namespace) ──
-        // 逻辑：优先级 Private (Target) > Official > Market
+        // ── Step 4: Skill Configuration Lookup ──
         let skillRaw: string | null = null;
-        let finalSkillName = normalizedSkillName;
+        finalSkillName = normalizedSkillName;
         let isPrivate = false;
+        let registryHit: string = "none";
         
-        // 4a. Try Private (Using targetUid for potential cross-user MCP routing)
+        // 4a. Try Private
         if (targetUid && targetUid !== "public") {
             const pKeyRaw = SkillKeys.private(targetUid, skillName);
             const pKeyNorm = SkillKeys.private(targetUid, normalizedSkillName);
@@ -88,7 +93,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             if (skillRaw) {
                 finalSkillName = skillName;
                 isPrivate = true;
-                console.log(`[DEBUG] Found PRIVATE skill: ${skillName} in namespace ${targetUid}`);
+                registryHit = "private";
             }
         }
 
@@ -96,19 +101,20 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         if (!skillRaw) {
             skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(normalizedSkillName));
             finalSkillName = normalizedSkillName;
-            if (skillRaw) console.log(`[DEBUG] Found OFFICIAL skill: ${normalizedSkillName}`);
+            if (skillRaw) registryHit = "official";
         }
 
         // 4c. Try Market
         if (!skillRaw) {
             skillRaw = await env.UNISKILL_KV.get(SkillKeys.market(normalizedSkillName));
             finalSkillName = normalizedSkillName;
-            if (skillRaw) console.log(`[DEBUG] Found MARKET skill: ${normalizedSkillName}`);
+            if (skillRaw) registryHit = "market";
         }
 
+        debugLog.push({ event: "registry_lookup", hit: registryHit, skill: finalSkillName });
+
         if (!skillRaw) {
-            console.error(`[DEBUG] Skill NOT FOUND in any registry: ${skillName}`);
-            return errorResponse(`Skill [${skillName}] is not registered in any accessible registry.`, 400);
+            return errorResponse(`Skill [${skillName}] is not registered.`, 400);
         }
 
         // ── Step 5: Parse & Verify ──
@@ -116,38 +122,46 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         const unified = JSON.parse(skillRaw);
         
         const implementation = spec.implementation || (spec as any).config || unified.config;
-        const creditsPerCall = Number(unified.credits_per_call ?? unified.meta?.cost ?? unified.cost_per_call ?? 1);
-        const displayName = unified.display_name || unified.meta?.display_name || finalSkillName;
-        const tags = unified.tags || unified.meta?.tags || [];
+        creditsPerCall = Number(unified.credits_per_call ?? unified.meta?.cost ?? unified.cost_per_call ?? 1);
+        displayName = unified.display_name || unified.meta?.display_name || finalSkillName;
+        tags = unified.tags || unified.meta?.tags || [];
 
-        // 重新判断是否强制路由至原生 Handler (Only if it's truly an Official/Native skill)
-        // 🌟 核心修复：如果是私有技能，强制 bypass 官方硬编码逻辑
         const isActuallyHardcoded = !isPrivate && 
                                    HARDCODED_NATIVE_SKILLS.has(finalSkillName) && 
                                    (unified.source === 'official' || !unified.source);
 
         if (!implementation && !isActuallyHardcoded) {
-            return errorResponse(`Implementation config missing for skill [${finalSkillName}]`, 500);
+            return errorResponse(`Implementation config missing for [${finalSkillName}]`, 500);
         }
 
         // ── Step 6: Rate Limit & Credits Check ──
         const rlResult = await checkRateLimit(keyHash, userTier, env);
-        if (!rlResult.isAllowed) {
-            return rateLimitResponse(rlResult.limit, rlResult.remaining);
-        }
+        if (!rlResult.isAllowed) return rateLimitResponse(rlResult.limit, rlResult.remaining);
         
         if (currentCredits === -1) currentCredits = 0;
         if (currentCredits < creditsPerCall) {
-            return errorResponse(`Insufficient Credits. This skill costs ${creditsPerCall}, but you have ${currentCredits}.`, 402);
+            ctx.waitUntil(recordSkillCall(
+                env, callerUid, finalSkillName, requestId, 0, "credits",
+                { 
+                    status_code: 402, 
+                    execution_status: 'SKIPPED', 
+                    error_message: "Insufficient Credits",
+                    latency_ms: Date.now() - startTime,
+                    metadata: debugLog
+                },
+                creditsPerCall, displayName, tags
+            ));
+            return errorResponse(`Insufficient Credits. Cost: ${creditsPerCall}, Balance: ${currentCredits}.`, 402);
         }
 
         // ── Step 7: Execution ──
         let finalData: any;
         if (isActuallyHardcoded) {
+            debugLog.push({ event: "execution_start", type: "native" });
             const syntheticRequest = new Request(request.url, {
                 method: "POST",
                 headers: request.headers,
-                body: JSON.stringify({ ...body, ...params }) // 🌟 严谨信封：保留西瓜，同时把种子铺在顶层
+                body: JSON.stringify({ ...body, ...params })
             });
 
             let nativeResponse: Response;
@@ -175,128 +189,132 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             } else if (normalizedSkillName === "uniskill_smart_chart") {
                 const { executeSmartChart } = await import("./uniskill-smart-chart");
                 const result = await executeSmartChart(params, env);
-                nativeResponse = new Response(JSON.stringify(result), {
-                    status: 200,
-                    headers: { "Content-Type": "application/json" }
-                });
+                nativeResponse = new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } });
             } else {
                 return errorResponse(`Native handler not found for: ${normalizedSkillName}`, 500);
             }
 
             if (!nativeResponse.ok) {
+                const errBody = await nativeResponse.clone().text();
+                ctx.waitUntil(recordSkillCall(
+                    env, callerUid, finalSkillName, requestId, 0, "credits",
+                    { 
+                        status_code: nativeResponse.status, 
+                        execution_status: 'FAILED', 
+                        error_message: errBody,
+                        latency_ms: Date.now() - startTime,
+                        metadata: debugLog
+                    },
+                    creditsPerCall, displayName, tags
+                ));
                 return nativeResponse;
             }
 
             finalData = await nativeResponse.json();
 
-            // 🔴 Apply dynamic plugin hook if configured
+            // apply dynamic plugin hook
             const hookName = implementation?.plugin_hook || unified.plugin_hook;
             if (hookName && (formatters as any)[hookName]) {
+                debugLog.push({ event: "formatter_applied", hook: hookName });
                 const formatted = (formatters as any)[hookName](finalData);
                 try {
                     finalData = typeof formatted === 'string' ? JSON.parse(formatted) : formatted;
                 } catch { finalData = { result: formatted }; }
             }
         } else {
-            // 🌟 核心增强：多级密钥加载 (Fetch Multi-level Secrets)
+            debugLog.push({ event: "execution_start", type: "executor" });
             let rawSecrets: Record<string, string> = {};
 
-            // 🌟 辅助函数：将多种格式的 Secrets 统一合并到 Map 中
             const mergeSecrets = (target: Record<string, string>, raw: string | null) => {
                 if (!raw) return target;
                 try {
                     const parsed = JSON.parse(raw);
                     if (Array.isArray(parsed)) {
-                        // 如果是数组格式 [{key, value}, ...] (控制台组件原始格式)
-                        parsed.forEach((item: any) => {
-                            if (item.key && item.value) target[item.key] = item.value;
-                        });
+                        parsed.forEach((item: any) => { if (item.key && item.value) target[item.key] = item.value; });
                     } else if (typeof parsed === 'object') {
-                        // 如果是对象格式 {key: value} (网关标准格式)
                         Object.assign(target, parsed);
                     }
                 } catch (e) {
-                    console.error("[Executor] JSON parse error for secrets:", e);
+                    debugLog.push({ event: "secrets_parse_error", error: (e as any).message });
                 }
                 return target;
             };
 
             try {
-                // 1. 加载用户全局密钥 (User-level)
                 const userSecretsRaw = await env.UNISKILL_KV.get(SkillKeys.secrets(callerUid));
                 mergeSecrets(rawSecrets, userSecretsRaw);
-                
-                // 2. 加载技能专属密钥 (Skill-level, has higher priority)
                 const skillSecretsRaw = await env.UNISKILL_KV.get(SkillKeys.skillSecrets(callerUid, skillName!));
                 mergeSecrets(rawSecrets, skillSecretsRaw);
             } catch (e) {
-                console.error(`[Executor] Failed to load raw secrets for ${callerUid}:`, e);
+                debugLog.push({ event: "secrets_io_error", error: (e as any).message });
             }
 
-            // 🌟 核心增强：实时解密 (On-the-fly Decryption)
+            // 实时解密
             const decryptedSecrets: Record<string, string> = {};
+            let decryptedCount = 0;
             for (const [key, val] of Object.entries(rawSecrets)) {
                 try {
-                    // 如果是加密格式（包含三个点号），执行解密；否则视为明文兼容
                     if (val && typeof val === 'string' && val.split('.').length === 3) {
                         decryptedSecrets[key] = decryptSecret(val, env.MASTER_ENCRYPTION_KEY);
+                        decryptedCount++;
                     } else {
                         decryptedSecrets[key] = val;
                     }
                 } catch (e: any) {
-                    console.error(`[Security] Failed to decrypt secret [${key}] for ${callerUid}:`, e);
-                    throw new Error(`Failed to decrypt secret ${key}. If you are running locally, please ensure MASTER_ENCRYPTION_KEY is configured in .dev.vars and restart wrangler.`);
+                    throw new Error(`Failed to decrypt secret ${key}. Verify MASTER_ENCRYPTION_KEY.`);
                 }
             }
-
+            debugLog.push({ event: "secrets_loaded", total: Object.keys(rawSecrets).length, decrypted: decryptedCount });
 
             try {
                 finalData = await executeSkill(implementation, params, env, decryptedSecrets, !isPrivate);
             } catch (execErr: any) {
+                ctx.waitUntil(recordSkillCall(
+                    env, callerUid, finalSkillName, requestId, 0, "credits",
+                    { 
+                        status_code: 502, 
+                        execution_status: 'FAILED', 
+                        error_message: execErr.message,
+                        latency_ms: Date.now() - startTime,
+                        metadata: debugLog
+                    },
+                    creditsPerCall, displayName, tags
+                ));
                 return errorResponse(execErr.message, 502);
             }
 
             const hookName = implementation.plugin_hook || unified.plugin_hook;
             if (hookName && (formatters as any)[hookName]) {
+                debugLog.push({ event: "formatter_applied", hook: hookName });
                 const formatted = (formatters as any)[hookName](finalData);
                 try {
                     finalData = typeof formatted === 'string' ? JSON.parse(formatted) : formatted;
-                } catch (pErr) {
-                    finalData = { result: formatted };
-                }
+                } catch { finalData = { result: formatted }; }
             }
         }
 
         // ── Step 7: Post-Execution Billing ──
         if (creditsPerCall > 0) {
             ctx.waitUntil(deductCredit(
-                env.UNISKILL_KV,
-                callerUid,
-                currentCredits,
-                creditsPerCall,
-                env.VERCEL_WEBHOOK_URL,
-                env.ADMIN_KEY,
-                finalSkillName,
-                keyHash
+                env.UNISKILL_KV, callerUid, currentCredits, creditsPerCall,
+                env.VERCEL_WEBHOOK_URL, env.ADMIN_KEY, finalSkillName, keyHash
             ));
         }
 
         // ── Step 8: Final Response ──
         const remaining = Math.round((currentCredits - creditsPerCall) * 100) / 100;
-        const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
 
-        // ── Step 9: Record Statistics (Dynamic Metadata) ──
+        // 🌟 记录交易：SUCCESS (200)
         ctx.waitUntil(recordSkillCall(
-            env, 
-            callerUid, 
-            finalSkillName, 
-            requestId, 
-            creditsPerCall, 
-            "credits", 
-            "success",
-            creditsPerCall,
-            displayName,
-            tags
+            env, callerUid, finalSkillName, requestId, creditsPerCall, "credits",
+            { 
+                status_code: 200, 
+                execution_status: 'SUCCESS', 
+                error_message: null,
+                latency_ms: Date.now() - startTime,
+                metadata: debugLog
+            },
+            creditsPerCall, displayName, tags
         ));
 
         return successResponse({
@@ -311,6 +329,17 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
 
     } catch (error: any) {
         console.error(`[Execution Flow Error]`, error);
+        ctx.waitUntil(recordSkillCall(
+            env, callerUid ?? "unknown", finalSkillName, requestId, 0, "credits",
+            { 
+                status_code: 500, 
+                execution_status: 'FAILED', 
+                error_message: error.message,
+                latency_ms: Date.now() - startTime,
+                metadata: debugLog
+            },
+            creditsPerCall, displayName, tags
+        ));
         return new Response(JSON.stringify({ error: error.message }), {
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" }

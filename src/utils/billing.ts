@@ -71,13 +71,21 @@ export async function getProfile(kv: KVNamespace, uid: string, env: any, keyHash
     let profile: UserProfile;
 
     if (oldCredits !== null || oldTier !== null) {
+        // 🌟 修复：legacy 迁移也从 DB 查真实用户名，不再写死 "user"
+        let migratedUsername = "user";
+        try {
+            const userData = await fetchUserDataByUid(uid, env);
+            if (userData?.username) migratedUsername = userData.username;
+        } catch (e) {
+            console.warn(`[Migration] Could not fetch username from DB for ${uid}, falling back to "user".`);
+        }
         profile = {
             credits: oldCredits ? parseFloat(oldCredits) : 0,
             tier: oldTier || "FREE",
-            username: "user", // Default for migrated legacy profiles
+            username: migratedUsername,
             updated_at: Date.now()
         };
-        console.log(`[Migration] Migrated legacy data to profile for ${uid}`);
+        console.log(`[Migration] Migrated legacy data to profile for ${uid}, username=${migratedUsername}`);
     } else {
         // 3. Fallback to DB (Source of Truth)
         console.log(`[Billing] KV miss for ${uid}, hitting DB.`);
