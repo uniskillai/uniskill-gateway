@@ -126,7 +126,11 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         creditsPerCall = Number(unified.credits_per_call ?? unified.meta?.cost ?? unified.cost_per_call ?? 1);
         displayName = unified.display_name || unified.meta?.display_name || finalSkillName;
         tags = unified.tags || unified.meta?.tags || [];
-        skillUid = unified.skill_uid || unified.id || null; // 🌟 核心提取：映射数据库中的 skill_uid
+        // 🌟 核心加固：UUID 类型防线 (Defensive UUID Validation)
+        // 逻辑：不再盲目使用 unified.id，且必须经过正则校验才允许进入审计链路。
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const candidateUid = unified.skill_uid || unified.id || null;
+        skillUid = (candidateUid && uuidRegex.test(candidateUid)) ? candidateUid : null;
 
         const isActuallyHardcoded = !isPrivate && 
                                    HARDCODED_NATIVE_SKILLS.has(finalSkillName) && 
