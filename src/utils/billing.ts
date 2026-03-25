@@ -190,7 +190,8 @@ async function syncToSupabase(
     keyHash: string,
     newBalance: number,
     skillName?: string,
-    credits?: number
+    credits?: number,
+    requestId?: string      // 🌟 新增：追踪 ID
 ): Promise<void> {
     try {
         const res = await fetch(webhookUrl, {
@@ -199,7 +200,13 @@ async function syncToSupabase(
                 "Content-Type": "application/json",
                 "Authorization": `Bearer ${adminKey}`,
             },
-            body: JSON.stringify({ hash: keyHash, newBalance, skillName, amount: -(credits ?? 0) }),
+            body: JSON.stringify({ 
+                hash: keyHash, 
+                newBalance, 
+                skillName, 
+                amount: -(credits ?? 0),
+                request_id: requestId // 🌟 透传给 Webhook
+            }),
         });
         if (!res.ok) {
             console.error(`[Sync] Webhook returned ${res.status}: ${await res.text()}`);
@@ -221,7 +228,8 @@ export async function deductCredit(
     webhookUrl?: string,
     adminKey?: string,
     _skillName = "unknown",
-    keyHash?: string 
+    keyHash?: string,
+    requestId?: string // 🌟 新增：追踪 ID
 ): Promise<void> {
     const newBalance = Math.round((currentCredits - creditsPerCall) * 100) / 100;
 
@@ -239,6 +247,6 @@ export async function deductCredit(
 
     // Step 3: Async write-back to Supabase
     if (webhookUrl && adminKey && keyHash) {
-        await syncToSupabase(webhookUrl, adminKey, keyHash, newBalance, _skillName, creditsPerCall);
+        await syncToSupabase(webhookUrl, adminKey, keyHash, newBalance, _skillName, creditsPerCall, requestId);
     }
 }

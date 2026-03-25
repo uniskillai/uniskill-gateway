@@ -32,7 +32,8 @@ export async function recordSkillCall(
     txStatus: ExecutionTxStatus,  // 🌟 核心替换：使用结构化的状态对象
     creditsPerCall?: number,
     display_name?: string, 
-    tags?: string[]       
+    tags?: string[],
+    skillUid?: string | null     // 🌟 新增：显式透传技能的 UUID
 ): Promise<void> {
     const supabase = getSupabaseClient(env);
 
@@ -40,6 +41,7 @@ export async function recordSkillCall(
         const rpcPayload = {
             p_user_uid: userUid,
             p_skill_name: skillName,
+            p_source_skill_uid: skillUid, // 🌟 对齐数据库 source_skill_uid 列
             p_payment_type: paymentType,
             p_request_id: requestId,
             p_cost: credits,

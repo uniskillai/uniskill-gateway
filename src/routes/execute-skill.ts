@@ -38,6 +38,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     let creditsPerCall: number = 0;
     let displayName: string = "unknown";
     let tags: string[] = [];
+    let skillUid: string | null = null; // 🌟 新增：显式存储技能的 UUID
     const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
 
     // ── Step 1: Extract 'key' from Header ──
@@ -125,6 +126,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         creditsPerCall = Number(unified.credits_per_call ?? unified.meta?.cost ?? unified.cost_per_call ?? 1);
         displayName = unified.display_name || unified.meta?.display_name || finalSkillName;
         tags = unified.tags || unified.meta?.tags || [];
+        skillUid = unified.skill_uid || unified.id || null; // 🌟 核心提取：映射数据库中的 skill_uid
 
         const isActuallyHardcoded = !isPrivate && 
                                    HARDCODED_NATIVE_SKILLS.has(finalSkillName) && 
@@ -149,7 +151,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
                     latency_ms: Date.now() - startTime,
                     metadata: debugLog
                 },
-                creditsPerCall, displayName, tags
+                creditsPerCall, displayName, tags, skillUid // 🌟 传入 skill_uid
             ));
             return errorResponse(`Insufficient Credits. Cost: ${creditsPerCall}, Balance: ${currentCredits}.`, 402);
         }
@@ -297,7 +299,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         if (creditsPerCall > 0) {
             ctx.waitUntil(deductCredit(
                 env, env.UNISKILL_KV, callerUid, currentCredits, creditsPerCall,
-                env.VERCEL_WEBHOOK_URL, env.ADMIN_KEY, finalSkillName, keyHash
+                env.VERCEL_WEBHOOK_URL, env.ADMIN_KEY, finalSkillName, keyHash, requestId // 🌟 透传 requestId
             ));
         }
 
@@ -314,7 +316,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
                 latency_ms: Date.now() - startTime,
                 metadata: debugLog
             },
-            creditsPerCall, displayName, tags
+            creditsPerCall, displayName, tags, skillUid // 🌟 传入 skill_uid
         ));
 
         return successResponse({
@@ -338,7 +340,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
                 latency_ms: Date.now() - startTime,
                 metadata: debugLog
             },
-            creditsPerCall, displayName, tags
+            creditsPerCall, displayName, tags, skillUid // 🌟 传入 skill_uid
         ));
         return new Response(JSON.stringify({ error: error.message }), {
             status: 500,
