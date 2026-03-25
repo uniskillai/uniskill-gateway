@@ -124,7 +124,8 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         
         const implementation = spec.implementation || (spec as any).config || unified.config;
         creditsPerCall = Number(unified.credits_per_call ?? unified.meta?.cost ?? unified.cost_per_call ?? 1);
-        displayName = unified.display_name || unified.meta?.display_name || finalSkillName;
+        // 🌟 核心变更：优先提取净身名字 (display_name)，防止 Emoji 污染审计日志
+    displayName = unified.display_name || unified.meta?.display_name || unified.meta?.name || finalSkillName;
         tags = unified.tags || unified.meta?.tags || [];
         // 🌟 核心加固：UUID 类型防线 (Defensive UUID Validation)
         // 逻辑：不再盲目使用 unified.id，且必须经过正则校验才允许进入审计链路。

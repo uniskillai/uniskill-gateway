@@ -301,11 +301,15 @@ export async function handleSyncSkill(request: Request, env: Env): Promise<Respo
             // Deduplicate
             toolsCache = toolsCache.filter(t => t.name !== skill_name && t.id !== skill_name);
             
+            // 🌟 动态拼装 MCP 显示名 (Prettified Label for MCP clients)
+            // 既保留了视觉上的 Emoji，又确保了原始数据 (display_name) 的纯净
+            const prettyName = (manifest.emoji || "🧩") + " " + (manifest.display_name || skill_name);
+
             // We ensure manifest has name property for MCP client
             const toolEntry = {
-                name: manifest.id || skill_name,
+                name: prettyName,
                 description: manifest.meta?.description || "A UniSkill Tool",
-                inputSchema: manifest.meta?.parameters || { type: "object", properties: {} }
+                inputSchema: manifest.config?.parameters || manifest.meta?.parameters || { type: "object", properties: {} }
             };
             toolsCache.push(toolEntry);
 
