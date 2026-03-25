@@ -304,7 +304,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         if (creditsPerCall > 0) {
             ctx.waitUntil(deductCredit(
                 env, env.UNISKILL_KV, callerUid, currentCredits, creditsPerCall,
-                env.VERCEL_WEBHOOK_URL, env.ADMIN_KEY, finalSkillName, keyHash, requestId // 🌟 透传 requestId
+                env.VERCEL_WEBHOOK_URL, env.ADMIN_KEY, finalSkillName, keyHash, requestId, displayName // 🌟 透传 purified displayName
             ));
         }
 
