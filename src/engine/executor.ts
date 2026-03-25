@@ -50,7 +50,13 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
     const fullText = targetUrl + 
                     JSON.stringify(impl.headers || {}) + 
                     JSON.stringify(impl.request?.headers || {}) +
-                    (impl.api_key || ""); // 🌟 包含 api_key 预检 (Include api_key in pre-check)
+                    JSON.stringify(impl.request?.body || impl.body || {}) +
+                    (impl.api_key || ""); 
+    
+    // 🌟 核心改进：检测是否为“声明式模板” (Detect if it is a declarative template)
+    // 逻辑：如果实施中已经使用了 {{...}}，则说明开发者在精细控制参数。
+    // 此时网关应停止“无脑追加”剩余参数，以防破坏诸如 wttr.in 这样严苛的 API。
+    const isTemplated = fullText.includes("{{");
 
     const matches = fullText.matchAll(placeholderRegex);
     for (const match of matches) {
@@ -151,7 +157,8 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
                 }
             }
 
-            if (Object.keys(remainingParams).length > 0) {
+            // 🌟 逻辑：如果是声明式模板，不再追加 Query String
+            if (!isTemplated && Object.keys(remainingParams).length > 0) {
                 const queryParams = new URLSearchParams(remainingParams).toString();
                 targetUrl += targetUrl.includes('?') ? `&${queryParams}` : `?${queryParams}`;
             }
@@ -176,7 +183,8 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
                     }
                 }
                 fetchOptions.body = JSON.stringify(resolvedBody);
-            } else if (params && Object.keys(params).length > 0) {
+            } else if (!isTemplated && params && Object.keys(params).length > 0) {
+                // 🌟 逻辑：如果是声明式模板，且没有明确定义 Body 结构，则不再追加 Body
                 fetchOptions.body = JSON.stringify(params);
             }
         }
