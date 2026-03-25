@@ -37,8 +37,7 @@ export async function recordSkillCall(
     const supabase = getSupabaseClient(env);
 
     try {
-        // 逻辑：调用 Supabase RPC 记录调用，并将状态对象拆解为独立字段
-        const { error } = await supabase.rpc('record_skill_usage', {
+        const rpcPayload = {
             p_user_uid: userUid,
             p_skill_name: skillName,
             p_payment_type: paymentType,
@@ -50,12 +49,19 @@ export async function recordSkillCall(
             p_execution_status: txStatus.execution_status,
             p_error_message: txStatus.error_message,
             p_latency_ms: txStatus.latency_ms,
-            p_metadata: txStatus.metadata,
+            p_metadata: { trace: txStatus.metadata || [] }, // 🌟 包装为对象，提高兼容性
             
             p_credits_per_call: creditsPerCall,
             p_display_name: display_name,
             p_tags: tags
-        });
+        };
+
+        // 🌟 诊断日志：在发送前打印完整 Payload
+        console.log(`[Stats][Diagnostic] Sending RPC to Supabase for ${skillName}...`);
+        // console.log(`[Stats][Payload] ${JSON.stringify(rpcPayload)}`); // 调试时可开启
+
+        // 逻辑：调用 Supabase RPC 记录调用
+        const { error } = await supabase.rpc('record_skill_usage', rpcPayload);
 
         if (error) {
             console.error(`[Stats] RPC error [${paymentType}] for [${skillName}] status:`, {
