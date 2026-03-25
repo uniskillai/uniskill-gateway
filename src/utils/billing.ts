@@ -213,6 +213,7 @@ async function syncToSupabase(
  * Deducts `cost` credits from the user's balance.
  */
 export async function deductCredit(
+    env: any,      // 🌟 新增 env 参数，用于回库查询
     kv: KVNamespace,
     uid: string,
     currentCredits: number,
@@ -225,7 +226,7 @@ export async function deductCredit(
     const newBalance = Math.round((currentCredits - creditsPerCall) * 100) / 100;
 
     // Step 1: Read existing profile to preserve Tier
-    const profile = await getProfile(kv, uid, {}); // Env not strictly needed if cached, but good practice
+    const profile = await getProfile(kv, uid, env); // 🌟 使用实时的 env 确保 DB 连通性
     profile.credits = newBalance;
     profile.updated_at = Date.now();
 

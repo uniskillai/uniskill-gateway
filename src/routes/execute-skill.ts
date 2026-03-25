@@ -296,7 +296,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         // ── Step 7: Post-Execution Billing ──
         if (creditsPerCall > 0) {
             ctx.waitUntil(deductCredit(
-                env.UNISKILL_KV, callerUid, currentCredits, creditsPerCall,
+                env, env.UNISKILL_KV, callerUid, currentCredits, creditsPerCall,
                 env.VERCEL_WEBHOOK_URL, env.ADMIN_KEY, finalSkillName, keyHash
             ));
         }

@@ -58,9 +58,15 @@ export async function recordSkillCall(
         });
 
         if (error) {
-            console.error(`[Stats] RPC error [${paymentType}] for [${skillName}] user [${userUid.slice(-6)}]:`, error.message);
+            console.error(`[Stats] RPC error [${paymentType}] for [${skillName}] status:`, {
+                code: error.code,
+                message: error.message,
+                details: error.details,
+                hint: error.hint
+            });
         } else {
-            console.log(`[Stats] Recorded: [${paymentType}] skill=${skillName} latency=${txStatus.latency_ms}ms status=${txStatus.execution_status} user=...${userUid.slice(-6)}`);
+            const shortUid = (userUid && typeof userUid === 'string') ? userUid.slice(-6) : 'anon';
+            console.log(`[Stats] Recorded: [${paymentType}] skill=${skillName} latency=${txStatus.latency_ms}ms status=${txStatus.execution_status} user=...${shortUid}`);
         }
     } catch (err) {
         console.error(`[Stats] Unexpected error recording call for ${skillName}:`, err);
