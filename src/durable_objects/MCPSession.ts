@@ -407,7 +407,7 @@ export class MCPSession {
                 body: JSON.stringify({
                     skill_name: actualSkillName,
                     skill_id: toolName, 
-                    user_uid: isOfficial ? "public" : callerUid,
+                    user_uid: callerUid, // 🌟 核心修复：始终传输真实的调用者 UID，防止 UUID 格式报错
                     payload: toolArguments,            
                     params: toolArguments              
                 })
