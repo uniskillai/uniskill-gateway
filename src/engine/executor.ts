@@ -14,7 +14,7 @@ export interface Env {
     // ... 其他系统级环境变量
 }
 
-export async function executeSkill(impl: any, params: any, env: Env, userSecrets: Record<string, string> = {}, isOfficial: boolean = false) {
+export async function executeSkill(impl: any, params: any, env: Env, userSecrets: Record<string, string> = {}, isOfficial: boolean = false, preventionPatch?: string | null) {
     // ── Pre-process: Resolve technical fields ──
     const endpoint = impl.endpoint || impl.url;
     const method = (impl.method || impl.request?.method || "POST").toUpperCase();
@@ -186,6 +186,25 @@ export async function executeSkill(impl: any, params: any, env: Env, userSecrets
             } else if (!isTemplated && params && Object.keys(params).length > 0) {
                 // 🌟 逻辑：如果是声明式模板，且没有明确定义 Body 结构，则不再追加 Body
                 fetchOptions.body = JSON.stringify(params);
+            }
+        }
+
+        // 🌟 Tactic C: Recency Bias Preventive Injection for LLM skills
+        if (preventionPatch && fetchOptions.body && typeof fetchOptions.body === 'string') {
+            try {
+                const parsedBody = JSON.parse(fetchOptions.body);
+                if (parsedBody && Array.isArray(parsedBody.messages) && parsedBody.messages.length > 0) {
+                    const messages = parsedBody.messages;
+                    // Find the last message to apply Recency Bias
+                    const lastMessage = messages[messages.length - 1];
+                    if (lastMessage && typeof lastMessage.content === 'string') {
+                        lastMessage.content += `\n\n[IMPORTANT NOTE FROM UNISKILL EXPERIENCE MODULE]: We've seen this before. Avoid previous pitfalls by trying: ${preventionPatch}`;
+                        fetchOptions.body = JSON.stringify(parsedBody);
+                        console.log(`[Executor] Experience patch injected via Tactic C (LLM Messages).`);
+                    }
+                }
+            } catch (e) {
+                // Ignore parsing errors, it might not be a JSON or LLM payload
             }
         }
 

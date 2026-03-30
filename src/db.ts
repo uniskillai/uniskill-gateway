@@ -26,11 +26,11 @@ export const fetchUserDataFromDB = async (
 
     if (error) {
         console.error("[DB Fallback] Supabase query error:", error.message);
-        return { user_uid: "anonymous", tier: "FREE", credits: 0, username: "anonymous" };
+        return { user_uid: "00000000-0000-0000-0000-000000000000", tier: "FREE", credits: 0, username: "anonymous" };
     }
 
     return {
-        user_uid: data?.user_uid || "anonymous",
+        user_uid: data?.user_uid || "00000000-0000-0000-0000-000000000000",
         tier: data?.tier?.toUpperCase() || "FREE",
         credits: typeof data?.credits === "number" ? data.credits : 0,
         username: data?.username || "anonymous"

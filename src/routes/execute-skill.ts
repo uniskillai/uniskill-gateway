@@ -26,6 +26,120 @@ const HARDCODED_NATIVE_SKILLS = new Set([
 ]);
 
 export async function handleExecuteSkill(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const startTime = Date.now();
+    let body: any = {};
+    try {
+        const cloned = request.clone();
+        body = await cloned.json();
+    } catch { /* Allow empty body */ }
+
+    const params = body.payload || body.params || body;
+    const execMeta: { callerUid?: string; skillUid?: string } = {};
+
+    let resultPayload: any = null;
+    let status: 'success' | 'error' = 'success';
+
+    try {
+        // 1. 执行核心逻辑
+        const response = await handleExecuteSkillCore(request, env, ctx, execMeta);
+        
+        status = response.ok ? 'success' : 'error';
+        
+        // 尝试解析响应用于日志
+        try {
+            const resClone = response.clone();
+            resultPayload = await resClone.json();
+        } catch {
+            resultPayload = { raw: await response.clone().text() };
+        }
+
+        return response;
+        
+    } catch (error: any) {
+        // 2. 捕获异常
+        status = 'error';
+        resultPayload = { message: error.message, stack: error.stack };
+        return new Response(JSON.stringify({ error: error.message || 'Skill Execution Failed' }), { 
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+
+    } finally {
+        // 🌟 3. 数据采集核心：使用 ctx.waitUntil 实现非阻塞上报
+        const duration = Date.now() - startTime;
+        
+        // 只有在失败或者采样命中的情况下才上报（节约资源）
+        const shouldLog = status === 'error' || Math.random() < 0.1; 
+
+        if (shouldLog) {
+            const finalSkillUid = execMeta.skillUid || body.skill_uid || body.skill_name || body.skill || 'unknown';
+            const finalUserId = execMeta.callerUid || body.user_id || body.user_uid || 'unknown';
+            
+            console.log(`[Telemetry][DEBUG] Firing saveInvocationLog for skill_uid=${finalSkillUid}, user_uid=${finalUserId}...`);
+            
+            try {
+                ctx.waitUntil(
+                    saveInvocationLog(env, {
+                        skill_uid: finalSkillUid,
+                        user_uid: finalUserId,
+                        status,
+                        input_payload: params,
+                        output_payload: resultPayload,
+                        duration_ms: duration
+                    })
+                );
+            } catch (waitErr) {
+                console.error(`[Telemetry][ERROR] ctx.waitUntil failed:`, waitErr);
+            }
+        }
+    }
+}
+
+/**
+ * 内部函数：静默写入日志到 Supabase invocations 表
+ */
+async function saveInvocationLog(env: Env, logData: any) {
+  try {
+    const rawUserUid = logData.user_id || logData.user_uid;
+    const isUUID = (uuid: any) => typeof uuid === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid);
+
+    if (!isUUID(rawUserUid)) {
+      console.error(`[Telemetry] Aborting save: Invalid UUID format for user_uid: ${rawUserUid}`);
+      return; // 别强行塞给 DB，塞了也会报错
+    }
+
+    // 关键点 1：确保字段名是 user_uid
+    const payload = {
+      skill_uid: logData.skill_uid,
+      user_uid: logData.user_id || logData.user_uid, // 兼容性处理
+      status: logData.status,
+      input_payload: logData.input_payload,
+      output_payload: logData.output_payload,
+      duration_ms: logData.duration_ms
+    };
+
+    const targetKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
+
+    const response = await fetch(`${env.SUPABASE_URL}/rest/v1/invocations`, {
+      method: 'POST',
+      headers: {
+        'apikey': targetKey,
+        'Authorization': `Bearer ${targetKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Supabase Save Error:', errorText); // 这里能看到具体报错
+    }
+  } catch (err) {
+    console.error('Network Error in Collection:', err);
+  }
+}
+
+async function handleExecuteSkillCore(request: Request, env: Env, ctx: ExecutionContext, execMeta?: { callerUid?: string; skillUid?: string }): Promise<Response> {
     const startTime = Date.now(); // 🌟 开启性能追踪
     const debugLog: any[] = [];   // 🌟 开启诊断 Trace
     
@@ -73,6 +187,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     try {
         // ── Step 3: Identity & Billing Resolve ──
         callerUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
+        if (execMeta) execMeta.callerUid = callerUid;
         debugLog.push({ event: "auth_success", user: callerUid.slice(-6) });
 
         const targetUid = body.user_uid || callerUid; 
@@ -132,6 +247,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         const candidateUid = unified.skill_uid || unified.id || null;
         skillUid = (candidateUid && uuidRegex.test(candidateUid)) ? candidateUid : null;
+        if (execMeta) execMeta.skillUid = skillUid || finalSkillName;
 
         const isActuallyHardcoded = !isPrivate && 
                                    HARDCODED_NATIVE_SKILLS.has(finalSkillName) && 
@@ -159,6 +275,67 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
                 creditsPerCall, displayName, tags, skillUid // 🌟 传入 skill_uid
             ));
             return errorResponse(`Insufficient Credits. Cost: ${creditsPerCall}, Balance: ${currentCredits}.`, 402);
+        }
+
+        // ── Step 6.5: Experience Injection (Preemptive Lookup) ──
+        let preventionPatch: string | null = null;
+        try {
+            if (env.VOYAGE_API_KEY && env.SUPABASE_URL) {
+                // 1. Prune Noise
+                const prunedParams = { ... (params || {}) };
+                const noiseKeys = ['session_id', 'request_id', 'trace_id', 'timestamp', 'nonce'];
+                for (const key of Object.keys(prunedParams)) {
+                    if (noiseKeys.some(nk => key.toLowerCase().includes(nk))) {
+                        delete prunedParams[key];
+                    }
+                }
+                const inputSignature = `Input: ${JSON.stringify(prunedParams)}`;
+
+                // 2. Vectorize using Voyage
+                const voyageResponse = await fetch("https://api.voyageai.com/v1/embeddings", {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${env.VOYAGE_API_KEY}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        input: [inputSignature],
+                        model: "voyage-code-3",
+                        output_dimension: 1536
+                    })
+                });
+
+                if (voyageResponse.ok) {
+                    const embedData = await voyageResponse.json() as any;
+                    const inputVector = embedData.data[0].embedding;
+
+                    // 3. Query Supabase
+                    const targetKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
+                    const rpcResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/match_learnings_by_input`, {
+                        method: "POST",
+                        headers: {
+                            "apikey": targetKey,
+                            "Authorization": `Bearer ${targetKey}`,
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            query_embedding: inputVector,
+                            match_threshold: 0.85, 
+                            match_count: 1
+                        })
+                    });
+
+                    if (rpcResponse.ok) {
+                        const rpcData = await rpcResponse.json() as any[];
+                        if (rpcData && rpcData.length > 0) {
+                            preventionPatch = rpcData[0].solution_patch;
+                            debugLog.push({ event: "experience_injection", match: true, similarity: rpcData[0].similarity });
+                        }
+                    }
+                }
+            }
+        } catch (err: any) {
+            debugLog.push({ event: "experience_injection_error", error: err.message });
         }
 
         // ── Step 7: Execution ──
@@ -203,6 +380,12 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
 
             if (!nativeResponse.ok) {
                 const errBody = await nativeResponse.clone().text();
+                // 🌟 Tactic B: 软拼接底线防线
+                let finalErrBody = errBody;
+                if (preventionPatch) {
+                    finalErrBody = `${errBody}\n\n[IMPORTANT NOTE FROM UNISKILL EXPERIENCE MODULE]: We've seen this before. Avoid previous pitfalls by trying: ${preventionPatch}`;
+                    nativeResponse = new Response(finalErrBody, { status: nativeResponse.status, headers: nativeResponse.headers });
+                }
                 ctx.waitUntil(recordSkillCall(
                     env, callerUid, finalSkillName, requestId, 0, "credits",
                     { 
@@ -274,20 +457,25 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
             debugLog.push({ event: "secrets_loaded", total: Object.keys(rawSecrets).length, decrypted: decryptedCount });
 
             try {
-                finalData = await executeSkill(implementation, params, env, decryptedSecrets, !isPrivate);
+                finalData = await executeSkill(implementation, params, env, decryptedSecrets, !isPrivate, preventionPatch);
             } catch (execErr: any) {
+                // 🌟 Tactic B: 软拼接底线防线
+                let errorMessage = execErr.message;
+                if (preventionPatch) {
+                    errorMessage = `${errorMessage}\n\n[IMPORTANT NOTE FROM UNISKILL EXPERIENCE MODULE]: We've seen this before. Avoid previous pitfalls by trying: ${preventionPatch}`;
+                }
                 ctx.waitUntil(recordSkillCall(
                     env, callerUid, finalSkillName, requestId, 0, "credits",
                     { 
                         status_code: 502, 
                         execution_status: 'FAILED', 
-                        error_message: execErr.message,
+                        error_message: errorMessage,
                         latency_ms: Date.now() - startTime,
                         metadata: debugLog
                     },
                     creditsPerCall, displayName, tags
                 ));
-                return errorResponse(execErr.message, 502);
+                return errorResponse(errorMessage, 502);
             }
 
             const hookName = implementation.plugin_hook || unified.plugin_hook;

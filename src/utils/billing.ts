@@ -148,7 +148,7 @@ export async function getUserUid(kv: KVNamespace, keyHash: string, env: any): Pr
     const username = userData.username || "anonymous";
 
     // 4. Write-back to KV for future requests (New format)
-    if (uid && uid !== "anonymous") {
+    if (uid && uid !== "00000000-0000-0000-0000-000000000000") {
         await kv.put(SkillKeys.authHash(keyHash), uid, { expirationTtl: 86400 * 30 }); // Mapping is long-lived
         setCache(cacheKey, uid);
         

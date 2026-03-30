@@ -21,6 +21,8 @@ export interface Env {
   VERCEL_WEBHOOK_URL: string;
   SUPABASE_URL: string;
   SUPABASE_ANON_KEY: string;
+  SUPABASE_SERVICE_ROLE_KEY?: string;
+  VOYAGE_API_KEY?: string;
   WEB_DOMAIN: string;
   INTERNAL_API_SECRET: string;
   TEST_WALLET_ADDRESS?: string;
