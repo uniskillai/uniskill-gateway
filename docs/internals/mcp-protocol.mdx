@@ -1,0 +1,86 @@
+---
+title: "MCP Protocol"
+description: "Durable Object SSE session architecture for Model Context Protocol"
+---
+
+## Overview
+
+UniSkill Gateway implements the **Model Context Protocol (MCP)** via Cloudflare **Durable Objects**, enabling persistent stateful SSE connections for AI agent integrations (Claude Desktop, Cursor, Cline, OpenClaw).
+
+## Session Lifecycle
+
+```
+GET /v1/mcp/sse        → Creates new DO instance, opens SSE stream
+                         Returns: event:endpoint → POST URL with session_id
+POST /v1/mcp/messages  → Routes to existing DO by session_id
+```
+
+**Full sequence:**
+
+```
+Client               Gateway (Workers)           Durable Object (MCPSession)
+  │                        │                              │
+  │── GET /v1/mcp/sse ─────▶│                              │
+  │                        │── newUniqueId() → DO.fetch() ─▶│
+  │                        │                              │── Build SSE stream
+  │                        │                              │── Lock authHeader
+  │◀── event: endpoint ────│◀─────────────────────────────│
+  │    ?session_id=xxxxx   │                              │── 5s heartbeat ♥
+  │                        │                              │
+  │── POST /v1/mcp/messages▶│                              │
+  │   ?session_id=xxxxx    │── idFromString() → DO.fetch() ─▶│
+  │                        │                              │── processMessage()
+  │◀── SSE event: message ─│◀─────────────────────────────│
+```
+
+## Supported MCP Methods
+
+| Method | Behavior |
+|--------|----------|
+| `initialize` | Returns `protocolVersion: "2024-11-05"`, server capabilities |
+| `tools/list` | Merged tool list: FALLBACK_TOOLS + KV cache + user private tools |
+| `tools/call` | Routes to `handleExecuteSkill` via internal fetch to `/v1/execute` |
+
+## tools/list Resolution
+
+Tool list is built in three layers using a **Map for deduplication** (higher priority overrides lower):
+
+```
+1. FALLBACK_TOOLS (hardcoded baseline)      — always available
+       ↓ override
+2. mcp_registry:tools_cache (KV)           — pushed by admin/refresh-tools
+       ↓ append
+3. skill:private:{uid}:* (per-user KV)     — fetched if auth key present
+```
+
+Private tools are named as `{username}_{skillId}` (max 64 chars, special chars → `_`).
+
+## Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| **Identity lock at handshake** | `storedAuthHeader` captured at `GET` time, persists across all `POST` messages in the session |
+| **15s timeout guard** | `Promise.race` prevents a single slow tool call from hanging the entire SSE stream |
+| **5s SSE heartbeat** | Empty `:\n\n` comment keeps the TCP connection alive through edge network proxies |
+| **Graceful degradation** | KV failures fall back to `FALLBACK_TOOLS` — session never returns an empty list |
+| **Map deduplication** | Normalized key (`uniskill_` prefix enforced) ensures no duplicate tools regardless of source |
+
+## Global Tool Refresh
+
+When skills are updated, trigger a broadcast to all active MCP sessions:
+
+```bash
+curl -X POST https://api.uniskill.ai/v1/admin/refresh-tools \
+  -H "Authorization: Bearer $INTERNAL_API_SECRET"
+```
+
+This writes a timestamp to `mcp_broadcast:tools_changed` in KV. Sessions check this key to invalidate their tool list cache on the next `tools/list` call.
+
+## Private Tool Execution Flow
+
+When a user calls a private tool (e.g. `alice_my_custom_skill`):
+
+1. Gateway strips username prefix → resolves actual `skillId`
+2. Constructs internal request to `/v1/execute` with user's `Authorization` header
+3. `handleExecuteSkill` performs full auth → billing → execution pipeline
+4. Result formatted via `formatToolResponse()` → pushed to SSE stream as `event: message`

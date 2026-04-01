@@ -29,19 +29,23 @@ export async function recordSkillCall(
     requestId: string,
     credits: number = 0, 
     paymentType: 'credits' | 'usd' = 'credits', 
-    txStatus: ExecutionTxStatus,  // 🌟 核心替换：使用结构化的状态对象
+    txStatus: ExecutionTxStatus,  
     creditsPerCall?: number,
     display_name?: string, 
     tags?: string[],
-    skillUid?: string | null     // 🌟 新增：显式透传技能的 UUID
+    skillUid?: string | null     
 ): Promise<void> {
     const supabase = getSupabaseClient(env);
+    const OFFICIAL_UUID = '00000000-0000-0000-0000-000000000001';
+    
+    // UUID Validator
+    const isUUID = (uuid: any) => typeof uuid === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid);
 
     try {
         const rpcPayload = {
-            p_user_uid: userUid,
+            p_user_uid: isUUID(userUid) ? userUid : OFFICIAL_UUID,
             p_skill_name: skillName,
-            p_source_skill_uid: skillUid, // 🌟 对齐数据库 source_skill_uid 列
+            p_source_skill_uid: isUUID(skillUid) ? skillUid : OFFICIAL_UUID, 
             p_payment_type: paymentType,
             p_request_id: requestId,
             p_cost: credits,
@@ -51,7 +55,11 @@ export async function recordSkillCall(
             p_execution_status: txStatus.execution_status,
             p_error_message: txStatus.error_message,
             p_latency_ms: txStatus.latency_ms,
-            p_metadata: { trace: txStatus.metadata || [] }, // 🌟 包装为对象，提高兼容性
+            p_metadata: { 
+                trace: txStatus.metadata || [],
+                original_skill: skillUid || skillName,
+                original_user: userUid
+            }, 
             
             p_credits_per_call: creditsPerCall,
             p_display_name: display_name,

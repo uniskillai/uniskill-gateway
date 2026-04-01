@@ -75,7 +75,7 @@ serve(async (req: Request) => {
                     body: JSON.stringify({
                         input: [inputSignature, errorSignature],
                         model: "voyage-code-3",
-                        output_dimension: 1536 
+                        output_dimension: 1024 
                     })
                 });
 

@@ -38,6 +38,15 @@
               "api-reference/search",
               "api-reference/scrape"
             ]
+          },
+          {
+            "group": "Internals",
+            "pages": [
+              "internals/execution-pipeline",
+              "internals/skill-registry",
+              "internals/billing-telemetry",
+              "internals/mcp-protocol"
+            ]
           }
         ]
       }

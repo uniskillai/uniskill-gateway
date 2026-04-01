@@ -69,7 +69,7 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
         const duration = Date.now() - startTime;
         
         // 只有在失败或者采样命中的情况下才上报（节约资源）
-        const shouldLog = status === 'error' || Math.random() < 0.1; 
+        const shouldLog = true; 
 
         if (shouldLog) {
             const finalSkillUid = execMeta.skillUid || body.skill_uid || body.skill_name || body.skill || 'unknown';
@@ -99,21 +99,36 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
  * 内部函数：静默写入日志到 Supabase invocations 表
  */
 async function saveInvocationLog(env: Env, logData: any) {
+  const OFFICIAL_UUID = '00000000-0000-0000-0000-000000000001';
+  
   try {
-    const rawUserUid = logData.user_id || logData.user_uid;
     const isUUID = (uuid: any) => typeof uuid === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid);
 
-    if (!isUUID(rawUserUid)) {
-      console.error(`[Telemetry] Aborting save: Invalid UUID format for user_uid: ${rawUserUid}`);
-      return; // 别强行塞给 DB，塞了也会报错
+    // 🌟 核心修复：UUID 安全护航，全线对齐到官方 ID ...0001
+    // 如果 user_uid 为空或非法（例如 'anonymous'），回退到 OFFICIAL_UUID
+    let finalUserUid = logData.user_uid;
+    if (!isUUID(finalUserUid)) {
+      finalUserUid = OFFICIAL_UUID;
     }
 
-    // 关键点 1：确保字段名是 user_uid
+    // 如果 skill_uid 为空或非法（例如 'uniskill_weather'），回退到 OFFICIAL_UUID
+    let finalSkillUid = logData.skill_uid;
+    if (!isUUID(finalSkillUid)) {
+      finalSkillUid = OFFICIAL_UUID;
+    }
+
+    // 封装 Payload
     const payload = {
-      skill_uid: logData.skill_uid,
-      user_uid: logData.user_id || logData.user_uid, // 兼容性处理
+      skill_uid: finalSkillUid,
+      user_uid: finalUserUid,
       status: logData.status,
-      input_payload: logData.input_payload,
+      input_payload: {
+        ... (logData.input_payload || {}),
+        _meta: {
+          original_skill: logData.skill_name || 'unknown',
+          original_user: logData.user_uid || 'unknown'
+        }
+      },
       output_payload: logData.output_payload,
       duration_ms: logData.duration_ms
     };
@@ -132,10 +147,10 @@ async function saveInvocationLog(env: Env, logData: any) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Supabase Save Error:', errorText); // 这里能看到具体报错
+      console.error('[Telemetry] Supabase Save Error:', errorText);
     }
   } catch (err) {
-    console.error('Network Error in Collection:', err);
+    console.error('[Telemetry] Network Error in Collection:', err);
   }
 }
 
@@ -301,7 +316,7 @@ async function handleExecuteSkillCore(request: Request, env: Env, ctx: Execution
                     body: JSON.stringify({
                         input: [inputSignature],
                         model: "voyage-code-3",
-                        output_dimension: 1536
+                        output_dimension: 1024
                     })
                 });
 

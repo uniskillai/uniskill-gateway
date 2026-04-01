@@ -1,0 +1,90 @@
+---
+title: "Billing & Telemetry"
+description: "Credit deduction pipeline and dual async telemetry chains"
+---
+
+## Overview
+
+Every successful skill execution triggers two parallel async chains, both dispatched non-blocking via `ctx.waitUntil`. Credits are **only deducted on success** — failures and rate-limit blocks never charge the user.
+
+## Chain A: Credit Deduction
+
+```
+deductCredit()
+  1. Read KV profile:{uid}  — preserve existing tier + username
+  2. Write new balance to KV profile:{uid}
+  3. Refresh In-Memory cache (60s TTL)
+  4. POST Vercel Webhook (syncToSupabase)
+       { hash, newBalance, skillName, amount, request_id, display_name }
+```
+
+The Vercel Webhook (`VERCEL_WEBHOOK_URL`) is the bridge to `uniskill-web`'s Supabase instance, writing the transaction into the persistent ledger.
+
+## Chain B: Telemetry (Dual Write)
+
+### 1. `recordSkillCall` → Supabase RPC
+
+Captures structured per-call statistics in tri-state format:
+
+```typescript
+type ExecutionTxStatus = {
+  status_code: number;
+  execution_status: 'SUCCESS' | 'FAILED' | 'SKIPPED';
+  error_message: string | null;
+  latency_ms: number;
+  metadata: any;  // debug trace array
+};
+```
+
+RPC payload sent to `record_skill_usage`:
+
+| Field | Description |
+|-------|-------------|
+| `p_user_uid` | UUID-validated caller UID (fallback: `OFFICIAL_UUID`) |
+| `p_skill_name` | Normalized skill identifier |
+| `p_source_skill_uid` | UUID-validated skill UUID |
+| `p_cost` | Credits charged |
+| `p_status_code` | HTTP status code |
+| `p_execution_status` | `SUCCESS` / `FAILED` / `SKIPPED` |
+| `p_latency_ms` | End-to-end request duration |
+| `p_metadata` | Debug trace + original skill/user identifiers |
+| `p_display_name` | Human-readable skill name snapshot |
+| `p_tags` | Skill tag array |
+
+### 2. `saveInvocationLog` → Supabase REST
+
+Raw payload audit written directly to the `invocations` table:
+
+```json
+{
+  "skill_uid": "uuid (or OFFICIAL_UUID fallback)",
+  "user_uid": "uuid (or OFFICIAL_UUID fallback)",
+  "status": "success | error",
+  "input_payload": { "...params", "_meta": { "original_skill": "...", "original_user": "..." } },
+  "output_payload": { "...result" },
+  "duration_ms": 342
+}
+```
+
+## Layered Cache Architecture
+
+```
+Request
+  → In-Memory Cache (60s TTL)    L0 — ~0ms
+      ↓ miss
+  → Cloudflare KV                L1 — ~1ms
+      ↓ miss
+  → Supabase DB                  L2 — ~50-200ms
+      ↓ write-back
+  → KV + Memory Cache            (self-healing)
+```
+
+## UUID Safety
+
+Both telemetry chains validate all UUID fields with a strict regex before writing. Any non-UUID value (e.g. skill name strings, `"anonymous"`) falls back to:
+
+```
+OFFICIAL_UUID = '00000000-0000-0000-0000-000000000001'
+```
+
+This prevents foreign key violations while preserving an audit trail of the actual identifier in `p_metadata`.

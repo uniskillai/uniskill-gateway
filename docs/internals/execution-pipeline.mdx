@@ -1,0 +1,68 @@
+---
+title: "Execution Pipeline"
+description: "The 8-step lifecycle of every skill invocation in UniSkill Gateway"
+---
+
+## Overview
+
+Every request to `/v1/execute` (or `/v1/execute/:skillName`) passes through 8 sequential gates before a response is returned. All gates after ⑦ are non-blocking via `ctx.waitUntil`.
+
+```
+① Key Format Check     → Must start with "us-", else 401
+② Identity Resolution  → SHA-256(key) → KV auth:hash:{hash} → User UID
+                         miss: Supabase DB fallback + KV write-back (TTL=30d)
+③ Profile Load         → KV profile:{uid} → legacy key migration → DB fallback
+                         contains: credits, tier, username (self-healing write-back)
+④ Skill Lookup         → Private KV → Official KV → Market KV
+                         full miss: 400 "Skill not registered"
+⑤ Rate Limit Check     → Tier-based RPM quota, KV atomic counter, 429 on exceed
+⑥ Credit Pre-check     → currentCredits < creditsPerCall → 402 (no charge)
+⑥.₅ Experience Inject  → Vectorize input via Voyage AI → Supabase RPC similarity search
+                         match ≥ 0.85: fetch preventionPatch, inject into request
+⑦ Execute              → isHardcoded? Native Handler : Generic Executor
+                         Native fail: Tactic B — append patch to error text
+                         LLM skill: Tactic C — inject into messages[-1].content
+⑧ Bill + Telemetry     → ctx.waitUntil (non-blocking):
+                         a. deductCredit → KV write-back + Vercel Webhook → Supabase
+                         b. recordSkillCall → Supabase RPC record_skill_usage
+                         c. saveInvocationLog → POST /rest/v1/invocations
+```
+
+## Native vs. Generic Execution
+
+### Native Skills (Hardcoded)
+
+Eight official skills bypass the Generic Executor and use dedicated TypeScript handlers:
+
+| Skill ID | Handler | Upstream |
+|----------|---------|----------|
+| `uniskill_weather` | `routes/weather.ts` | Open-Meteo |
+| `uniskill_scrape` | `routes/scrape.ts` | Jina AI Reader |
+| `uniskill_math` | `routes/math.ts` | Local engine |
+| `uniskill_time` | `routes/time.ts` | System timezone |
+| `uniskill_geo` | `routes/geo.ts` | Mapbox Geocoding |
+| `uniskill_crypto_util` | `routes/crypto_util.ts` | Web Crypto API |
+| `uniskill_github_tracker` | `routes/github-tracker.ts` | GitHub API |
+| `uniskill_smart_chart` | `routes/uniskill-smart-chart.ts` | QuickChart.io |
+
+### Generic Executor (`engine/executor.ts`)
+
+All registry/market/private skills run through the declarative template engine:
+
+- **`{{param}}` placeholders** — resolved in URL, headers, and request body
+- **`{{SECRETS.KEY}}`** — decrypted from user's AES-256 encrypted KV secrets
+- **Declarative template detection** — suppresses auto-appending when `{{...}}` is present
+- **Response mapping** — JSONPath extraction via `response_mapping`
+- **10s hard timeout** via `AbortController`
+- **Fail-fast circuit breaker** — missing SECRETS placeholder → immediate error, no upstream call
+
+## Experience Injection Detail
+
+Before execution (step ⑥.₅), the gateway performs a semantic similarity search:
+
+1. Noise keys (`session_id`, `trace_id`, etc.) are pruned from params
+2. Remaining params are vectorized via **Voyage AI** (`voyage-code-3`, 1024-dim)
+3. Vector queried against `skill_learnings` table via `match_learnings_by_input` RPC (threshold: 0.85)
+4. On match: `preventionPatch` string is retrieved and injected via:
+   - **Tactic B** (native handlers): appended as plaintext suffix to error response body
+   - **Tactic C** (LLM skills): injected into `messages[-1].content` in the request body
