@@ -202,6 +202,17 @@ export default {
         return handleAuthVerify(request, env);
       }
 
+      // 路由：Analytics 统计接口 (Analytics Dashboard API)
+      if (cleanPath === "/v1/analytics" && method === "GET") {
+        const userUid = await authenticate(request, env);
+        if (!userUid) return errorResponse("Unauthorized: Missing or Invalid API Key", 401);
+        
+        const { handleGetAnalytics } = await import("./routes/analytics");
+        // 将 userUid 注入 request 供处理器使用 (Inject userUid into request context)
+        (request as any).userUid = userUid;
+        return handleGetAnalytics(request, env);
+      }
+
       // 路由：Admin Provisioning
       if (cleanPath === "/v1/admin/provision" && method === "POST") {
         const authHeader = request.headers.get("Authorization") || "";
@@ -333,3 +344,19 @@ export default {
     });
   }
 };
+
+/**
+ * 🔒 鉴权助手函数：验证并返回 User UID (Auth Helper: Resolve and Verify User Identity)
+ * 逻辑：提取 Key → 哈希运算 → KV 查询 → 用户 UID
+ */
+async function authenticate(request: Request, env: Env): Promise<string | null> {
+  const { extractBearerKey, isValidKeyFormat, hashKey } = await import("./utils/auth");
+  const rawKey = extractBearerKey(request);
+  
+  if (!rawKey || !isValidKeyFormat(rawKey)) return null;
+  
+  const keyHash = await hashKey(rawKey);
+  const { getUserUid } = await import("./utils/billing");
+  
+  return await getUserUid(env.UNISKILL_KV, keyHash, env);
+}
