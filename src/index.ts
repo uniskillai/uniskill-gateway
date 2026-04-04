@@ -29,6 +29,22 @@ export interface Env {
   GITHUB_TOKEN?: string;
   MASTER_ENCRYPTION_KEY: string;
   MCP_SESSION: DurableObjectNamespace;
+  // 🌟 Auto-Workflow 元技能：DeepSeek Planner LLM 访问密钥
+  // 配置方式：wrangler secret put DEEPSEEK_API_KEY
+  DEEPSEEK_API_KEY?: string;
+
+  // 🌟 CLI 运行时：远程沙箱 Node 节点 URL 与可选授权 Token
+  SANDBOX_NODE_URL?: string;
+  SANDBOX_AUTH_TOKEN?: string; // 保持旧版兼容
+  SANDBOX_INTERNAL_TOKEN?: string; // 映射自 wrangler secret
+
+  // 🌟 Vault 集成：用于安全 Secret 存储与隔离
+  VAULT_URL?: string;
+  VAULT_TOKEN?: string;
+
+  // 🌟 核心绑定：元数据 KV 与 异步计费队列
+  SKILLS_KV: KVNamespace; // 映射自技能清单 KV
+  BILLING_QUEUE: Queue;  // 映射自 CF Queue
 }
 
 export default {

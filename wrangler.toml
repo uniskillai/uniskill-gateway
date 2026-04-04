@@ -49,6 +49,11 @@ WEB_DOMAIN = "https://uniskill.ai"
 # 逻辑：用于生成静态预览图的 Mapbox 密钥 (非必填，填入可启用地图)
 MAPBOX_API_KEY = "your_mapbox_api_key_here"
 
+# 🌟 Auto-Workflow 元技能：DeepSeek Planner API Key
+# 安全警告：此密钥禁止明文写入 wrangler.toml
+# 配置方式：wrangler secret put DEEPSEEK_API_KEY
+# 本地开发：请在 .dev.vars 中添加 DEEPSEEK_API_KEY=sk-xxxxxxxx
+
 [dev]
 port = 8787
 

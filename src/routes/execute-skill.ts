@@ -1,559 +1,254 @@
-// src/routes/execute-skill.ts
-// Logic: Core engine for executing UniSkill tools with auth, billing, and formatters.
+/**
+ * src/routes/execute-skill.ts
+ * UniSkill Gateway 技能执行路由分发器 (规范化版)
+ * 职责：鉴权、加载配置、获取机密信息、执行分发、异步计费。
+ */
 
+import { executeCliSkill } from "../skills/execute-cli";
+import { executeSkill } from "../engine/executor"; // 保持对 HTTP/Native 引擎的引用
+import { errorResponse, corsHeaders } from "../utils/response";
+import { getUserUid, getProfile } from "../utils/billing";
+import { checkRateLimit } from "../rateLimit"; // 🌟 修复：从正确模块导入
 import { hashKey } from "../utils/auth";
-import { SkillKeys } from "../utils/skill-keys";
-import { executeSkill } from "../engine/executor";
-import { errorResponse, corsHeaders, rateLimitResponse, successResponse } from "../utils/response";
-import { getProfile, deductCredit, getUserUid } from "../utils/billing";
 import { SkillParser } from "../engine/parser";
-import { formatters } from "../formatters/index";
-import { checkRateLimit } from "../rateLimit";
+import { SkillKeys } from "../utils/skill-keys";
 import type { Env } from "../index";
-import { recordSkillCall } from "../utils/stats";
-import { decryptSecret } from "../utils/security";
+import type { 
+  CliImplementation, 
+  CliExecutionContext, 
+  CliExecutionResult,
+  ExecutionStatus
+} from "../types/cli";
 
-// Logic: Hardcoded native handlers that don't use the generic executor
-const HARDCODED_NATIVE_SKILLS = new Set([
-    "uniskill_weather",
-    "uniskill_scrape",
-    "uniskill_math",
-    "uniskill_time",
-    "uniskill_crypto_util",
-    "uniskill_geo",
-    "uniskill_github_tracker",
-    "uniskill_smart_chart"
-]);
+// ============================================================
+// 接口定义：对接新版计费与 Manifest 模型
+// ============================================================
 
-export async function handleExecuteSkill(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const startTime = Date.now();
-    let body: any = {};
-    try {
-        const cloned = request.clone();
-        body = await cloned.json();
-    } catch { /* Allow empty body */ }
-
-    const params = body.payload || body.params || body;
-    const execMeta: { callerUid?: string; skillUid?: string } = {};
-
-    let resultPayload: any = null;
-    let status: 'success' | 'error' = 'success';
-
-    try {
-        // 1. 执行核心逻辑
-        const response = await handleExecuteSkillCore(request, env, ctx, execMeta);
-        
-        status = response.ok ? 'success' : 'error';
-        
-        // 尝试解析响应用于日志
-        try {
-            const resClone = response.clone();
-            resultPayload = await resClone.json();
-        } catch {
-            resultPayload = { raw: await response.clone().text() };
-        }
-
-        return response;
-        
-    } catch (error: any) {
-        // 2. 捕获异常
-        status = 'error';
-        resultPayload = { message: error.message, stack: error.stack };
-        return new Response(JSON.stringify({ error: error.message || 'Skill Execution Failed' }), { 
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-
-    } finally {
-        // 🌟 3. 数据采集核心：使用 ctx.waitUntil 实现非阻塞上报
-        const duration = Date.now() - startTime;
-        
-        // 只有在失败或者采样命中的情况下才上报（节约资源）
-        const shouldLog = true; 
-
-        if (shouldLog) {
-            const finalSkillUid = execMeta.skillUid || body.skill_uid || body.skill_name || body.skill || 'unknown';
-            const finalUserId = execMeta.callerUid || body.user_id || body.user_uid || 'unknown';
-            
-            console.log(`[Telemetry][DEBUG] Firing saveInvocationLog for skill_uid=${finalSkillUid}, user_uid=${finalUserId}...`);
-            
-            try {
-                ctx.waitUntil(
-                    saveInvocationLog(env, {
-                        skill_uid: finalSkillUid,
-                        user_uid: finalUserId,
-                        status,
-                        input_payload: params,
-                        output_payload: resultPayload,
-                        duration_ms: duration
-                    })
-                );
-            } catch (waitErr) {
-                console.error(`[Telemetry][ERROR] ctx.waitUntil failed:`, waitErr);
-            }
-        }
-    }
+interface SkillManifest {
+  /** 技能逻辑标识符 (与系统中统一的 skill_name 为准) */
+  skill_name: string;
+  name: string;
+  display_name?: string;
+  implementation: any; // 动态实现块
+  cost: {
+    base_fee_cents: number;
+    per_second_cents?: number;
+  };
 }
 
-/**
- * 内部函数：静默写入日志到 Supabase invocations 表
- */
-async function saveInvocationLog(env: Env, logData: any) {
-  const OFFICIAL_UUID = '00000000-0000-0000-0000-000000000001';
+interface BillingEvent {
+  skill_name: string;
+  payer_id: string;
+  status: ExecutionStatus;
+  base_fee_cents: number;
+  infrastructure_fee_cents: number;
+  duration_ms: number;
+  timestamp: string;
+  metadata?: any;
+}
+
+// ============================================================
+// 核心路由 Handler (Cloudflare Worker fetch handler)
+// ============================================================
+
+export async function handleExecuteSkill(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const startTime = Date.now();
   
   try {
-    const isUUID = (uuid: any) => typeof uuid === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid);
+    // 1. 身份验证 (Authentication & Authorization)
+    // 锁定 payer_id 来源，防止身份伪造
+    const authHeader = request.headers.get("Authorization") || "";
+    const rawKey = authHeader.replace("Bearer ", "").trim();
+    if (!rawKey.startsWith("us-")) return errorResponse("Invalid Key Format", 401);
+    
+    const keyHash = await hashKey(rawKey);
+    const payer_id = await getUserUid(env.UNISKILL_KV, keyHash, env);
+    if (!payer_id) return errorResponse("Unauthorized", 401);
 
-    // 🌟 核心修复：UUID 安全护航，全线对齐到官方 ID ...0001
-    // 如果 user_uid 为空或非法（例如 'anonymous'），回退到 OFFICIAL_UUID
-    let finalUserUid = logData.user_uid;
-    if (!isUUID(finalUserUid)) {
-      finalUserUid = OFFICIAL_UUID;
+    // 2. 解析请求负荷 (Payload Parsing)
+    let body: any = {};
+    try {
+      body = await request.json();
+    } catch { /* Allow empty body */ }
+    
+    // 🌟 规范化：按需兼容 skill_name || skill || skill_id，确保旧版请求不中断
+    const skillName = body.skill_name || body.skill || body.skill_id;
+    if (!skillName) return errorResponse("Missing skill_name", 400);
+
+    const params = body.payload || body.params || body;
+
+    // 3. 加载技能清单 (具备由系统逻辑定义的向下兼容能力)
+    const manifest = await loadSkillManifest(env, skillName, payer_id);
+    if (!manifest) return errorResponse(`Skill [${skillName}] not found`, 404);
+
+    // 4. 配额与速率限制检查 (Pre-execution check)
+    const profile = await getProfile(env.UNISKILL_KV, payer_id, env, keyHash);
+    const rlResult = await checkRateLimit(keyHash, profile.tier, env);
+    if (!rlResult.isAllowed) return errorResponse(`Rate limit exceeded`, 429);
+
+    // 5. 根据 Implementation 类型进行分发
+    let executionResult: CliExecutionResult;
+    const implementation = manifest.implementation;
+
+    if (implementation && implementation.type === 'cli') {
+      // 🚀 分支 A: CLI 运行时
+      // 从 Vault 获取该用户授权的机密信息 (基于系统逻辑，通过 payer_id 隔离)
+      const secrets = await fetchSecretsFromVault(env, payer_id, skillName);
+      
+      const cliCtx: CliExecutionContext = {
+        skill_name: skillName, // 对齐全域命名规范
+        payer_id,
+        params: params as Record<string, string>,
+        implementation: implementation as CliImplementation,
+        secrets
+      };
+
+      executionResult = await executeCliSkill(
+        cliCtx, 
+        env.SANDBOX_NODE_URL || "", 
+        env.SANDBOX_INTERNAL_TOKEN || ""
+      );
+    } else {
+      // 🛠 分支 B: 传统 HTTP/Native 运行时 (保持向后兼容)
+      try {
+        const data = await executeSkill(implementation, params, env, {}, true);
+        executionResult = {
+          status: 'SUCCESS',
+          result: data as Record<string, unknown>, // 类型断言以符合新结果接口
+          duration_ms: Date.now() - startTime
+        };
+      } catch (err: any) {
+        executionResult = {
+          status: 'FAILED',
+          message: err.message,
+          result: { error: String(err) },
+          duration_ms: Date.now() - startTime
+        };
+      }
     }
 
-    // 如果 skill_uid 为空或非法（例如 'uniskill_weather'），回退到 OFFICIAL_UUID
-    let finalSkillUid = logData.skill_uid;
-    if (!isUUID(finalSkillUid)) {
-      finalSkillUid = OFFICIAL_UUID;
-    }
+    // 6. 异步发送计费事件 (非阻塞，使用新版 BillingEvent 格式)
+    ctx.waitUntil(enqueueBillingEvent(env, manifest, payer_id, executionResult));
 
-    // 封装 Payload
-    const payload = {
-      skill_uid: finalSkillUid,
-      user_uid: finalUserUid,
-      status: logData.status,
-      input_payload: {
-        ... (logData.input_payload || {}),
-        _meta: {
-          original_skill: logData.skill_name || 'unknown',
-          original_user: logData.user_uid || 'unknown'
-        }
-      },
-      output_payload: logData.output_payload,
-      duration_ms: logData.duration_ms
-    };
-
-    const targetKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
-
-    const response = await fetch(`${env.SUPABASE_URL}/rest/v1/invocations`, {
-      method: 'POST',
+    // 7. 返回增强型标准化响应
+    const statusCode = executionResult.status === 'SUCCESS' ? 200 : 500;
+    return new Response(JSON.stringify({
+      ...executionResult,
+      _uniskill: {
+        request_id: request.headers.get("cf-ray") || crypto.randomUUID(),
+        status: executionResult.status,
+        duration_ms: executionResult.duration_ms
+      }
+    }), {
+      status: statusCode,
       headers: {
-        'apikey': targetKey,
-        'Authorization': `Bearer ${targetKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
+        ...corsHeaders,
+        "Content-Type": "application/json",
+        "X-UniSkill-Status": executionResult.status
+      }
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[Telemetry] Supabase Save Error:', errorText);
-    }
-  } catch (err) {
-    console.error('[Telemetry] Network Error in Collection:', err);
+  } catch (error: any) {
+    console.error(`[Gateway Controller Error]`, error);
+    return errorResponse(error.message || "Internal Gateway Error", 500);
   }
 }
 
-async function handleExecuteSkillCore(request: Request, env: Env, ctx: ExecutionContext, execMeta?: { callerUid?: string; skillUid?: string }): Promise<Response> {
-    const startTime = Date.now(); // 🌟 开启性能追踪
-    const debugLog: any[] = [];   // 🌟 开启诊断 Trace
-    
-    const url = new URL(request.url);
-    const path = url.pathname;
+// ============================================================
+// 辅助函数：机密信息获取 (Vault 集成，基于 Payer ID)
+// ============================================================
 
-    // ── 审计核心变量插桩 ──
-    let callerUid: string | null = null;
-    let finalSkillName: string = "unknown";
-    let creditsPerCall: number = 0;
-    let displayName: string = "unknown";
-    let tags: string[] = [];
-    let skillUid: string | null = null; // 🌟 新增：显式存储技能的 UUID
-    const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
+async function fetchSecretsFromVault(env: Env, payerId: string, skillName: string): Promise<Record<string, string>> {
+  if (!env.VAULT_URL || !env.VAULT_TOKEN) return {};
 
-    // ── Step 1: Extract 'key' from Header ──
-    const authHeader = request.headers.get("Authorization") || "";
-    const rawKey = authHeader.replace("Bearer ", "").trim();
-
-    if (!rawKey.startsWith("us-")) {
-        return errorResponse("Invalid Key Format", 401);
+  const url = `${env.VAULT_URL.replace(/\/$/, "")}/v1/secrets/${payerId}/${skillName}`;
+  const response = await fetch(url, {
+    headers: {
+      "Authorization": `Bearer ${env.VAULT_TOKEN}`,
+      "X-UniSkill-Payer-Id": payerId
     }
+  });
 
-    const keyHash = await hashKey(rawKey);
+  if (response.status === 404) return {};
+  if (!response.ok) throw new Error(`Vault access failed: HTTP ${response.status}`);
 
-    // ── Step 2: Payload Parsing ──
-    let body: any = {};
-    try {
-        body = await request.json();
-    } catch { /* Allowed to be empty */ }
-
-    // Logic: Resolve skillName from path or body
-    let skillName: string | undefined = body.skill_name || body.skill;
-    if (!skillName && path.startsWith("/v1/execute/") && path.split("/").length > 3) {
-        skillName = path.split("/")[3];
-    } 
-    
-    if (!skillName) {
-        return errorResponse("Missing skill_name in path or body", 400);
-    }
-
-    const normalizedSkillName = skillName.startsWith("uniskill_") ? skillName : `uniskill_${skillName}`;
-    const params = body.payload || body.params || body;
-
-    try {
-        // ── Step 3: Identity & Billing Resolve ──
-        callerUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
-        if (execMeta) execMeta.callerUid = callerUid;
-        debugLog.push({ event: "auth_success", user: callerUid.slice(-6) });
-
-        const targetUid = body.user_uid || callerUid; 
-        const profile = await getProfile(env.UNISKILL_KV, callerUid, env, keyHash);
-        const userTier = profile.tier;
-        let currentCredits = profile.credits;
-
-        // ── Step 4: Skill Configuration Lookup ──
-        let skillRaw: string | null = null;
-        finalSkillName = normalizedSkillName;
-        let isPrivate = false;
-        let registryHit: string = "none";
-        
-        // 4a. Try Private
-        if (targetUid && targetUid !== "public") {
-            const pKeyRaw = SkillKeys.private(targetUid, skillName);
-            const pKeyNorm = SkillKeys.private(targetUid, normalizedSkillName);
-            skillRaw = await env.UNISKILL_KV.get(pKeyRaw) || await env.UNISKILL_KV.get(pKeyNorm);
-            if (skillRaw) {
-                finalSkillName = skillName;
-                isPrivate = true;
-                registryHit = "private";
-            }
-        }
-
-        // 4b. Try Official
-        if (!skillRaw) {
-            skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(normalizedSkillName));
-            finalSkillName = normalizedSkillName;
-            if (skillRaw) registryHit = "official";
-        }
-
-        // 4c. Try Market
-        if (!skillRaw) {
-            skillRaw = await env.UNISKILL_KV.get(SkillKeys.market(normalizedSkillName));
-            finalSkillName = normalizedSkillName;
-            if (skillRaw) registryHit = "market";
-        }
-
-        debugLog.push({ event: "registry_lookup", hit: registryHit, skill: finalSkillName });
-
-        if (!skillRaw) {
-            return errorResponse(`Skill [${skillName}] is not registered.`, 400);
-        }
-
-        // ── Step 5: Parse & Verify ──
-        const spec = SkillParser.parse(skillRaw);
-        const unified = JSON.parse(skillRaw);
-        
-        const implementation = spec.implementation || (spec as any).config || unified.config;
-        creditsPerCall = Number(unified.credits_per_call ?? unified.meta?.cost ?? unified.cost_per_call ?? 1);
-        // 🌟 核心变更：优先提取净身名字 (display_name)，防止 Emoji 污染审计日志
-    displayName = unified.display_name || unified.meta?.display_name || unified.meta?.name || finalSkillName;
-        tags = unified.tags || unified.meta?.tags || [];
-        // 🌟 核心加固：UUID 类型防线 (Defensive UUID Validation)
-        // 逻辑：不再盲目使用 unified.id，且必须经过正则校验才允许进入审计链路。
-        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        const candidateUid = unified.skill_uid || unified.id || null;
-        skillUid = (candidateUid && uuidRegex.test(candidateUid)) ? candidateUid : null;
-        if (execMeta) execMeta.skillUid = skillUid || finalSkillName;
-
-        const isActuallyHardcoded = !isPrivate && 
-                                   HARDCODED_NATIVE_SKILLS.has(finalSkillName) && 
-                                   (unified.source === 'official' || !unified.source);
-
-        if (!implementation && !isActuallyHardcoded) {
-            return errorResponse(`Implementation config missing for [${finalSkillName}]`, 500);
-        }
-
-        // ── Step 6: Rate Limit & Credits Check ──
-        const rlResult = await checkRateLimit(keyHash, userTier, env);
-        if (!rlResult.isAllowed) return rateLimitResponse(rlResult.limit, rlResult.remaining);
-        
-        if (currentCredits === -1) currentCredits = 0;
-        if (currentCredits < creditsPerCall) {
-            ctx.waitUntil(recordSkillCall(
-                env, callerUid, finalSkillName, requestId, 0, "credits",
-                { 
-                    status_code: 402, 
-                    execution_status: 'SKIPPED', 
-                    error_message: "Insufficient Credits",
-                    latency_ms: Date.now() - startTime,
-                    metadata: debugLog
-                },
-                creditsPerCall, displayName, tags, skillUid // 🌟 传入 skill_uid
-            ));
-            return errorResponse(`Insufficient Credits. Cost: ${creditsPerCall}, Balance: ${currentCredits}.`, 402);
-        }
-
-        // ── Step 6.5: Experience Injection (Preemptive Lookup) ──
-        let preventionPatch: string | null = null;
-        try {
-            if (env.VOYAGE_API_KEY && env.SUPABASE_URL) {
-                // 1. Prune Noise
-                const prunedParams = { ... (params || {}) };
-                const noiseKeys = ['session_id', 'request_id', 'trace_id', 'timestamp', 'nonce'];
-                for (const key of Object.keys(prunedParams)) {
-                    if (noiseKeys.some(nk => key.toLowerCase().includes(nk))) {
-                        delete prunedParams[key];
-                    }
-                }
-                const inputSignature = `Input: ${JSON.stringify(prunedParams)}`;
-
-                // 2. Vectorize using Voyage
-                const voyageResponse = await fetch("https://api.voyageai.com/v1/embeddings", {
-                    method: "POST",
-                    headers: {
-                        "Authorization": `Bearer ${env.VOYAGE_API_KEY}`,
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        input: [inputSignature],
-                        model: "voyage-code-3",
-                        output_dimension: 1024
-                    })
-                });
-
-                if (voyageResponse.ok) {
-                    const embedData = await voyageResponse.json() as any;
-                    const inputVector = embedData.data[0].embedding;
-
-                    // 3. Query Supabase
-                    const targetKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
-                    const rpcResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/match_learnings_by_input`, {
-                        method: "POST",
-                        headers: {
-                            "apikey": targetKey,
-                            "Authorization": `Bearer ${targetKey}`,
-                            "Content-Type": "application/json"
-                        },
-                        body: JSON.stringify({
-                            query_embedding: inputVector,
-                            match_threshold: 0.85, 
-                            match_count: 1
-                        })
-                    });
-
-                    if (rpcResponse.ok) {
-                        const rpcData = await rpcResponse.json() as any[];
-                        if (rpcData && rpcData.length > 0) {
-                            preventionPatch = rpcData[0].solution_patch;
-                            debugLog.push({ event: "experience_injection", match: true, similarity: rpcData[0].similarity });
-                        }
-                    }
-                }
-            }
-        } catch (err: any) {
-            debugLog.push({ event: "experience_injection_error", error: err.message });
-        }
-
-        // ── Step 7: Execution ──
-        let finalData: any;
-        if (isActuallyHardcoded) {
-            debugLog.push({ event: "execution_start", type: "native" });
-            const syntheticRequest = new Request(request.url, {
-                method: "POST",
-                headers: request.headers,
-                body: JSON.stringify({ ...body, ...params })
-            });
-
-            let nativeResponse: Response;
-            if (normalizedSkillName === "uniskill_weather") {
-                const { handleWeather } = await import("./weather");
-                nativeResponse = await handleWeather(syntheticRequest, env);
-            } else if (normalizedSkillName === "uniskill_scrape") {
-                const { handleScrape } = await import("./scrape");
-                nativeResponse = await handleScrape(syntheticRequest, env);
-            } else if (normalizedSkillName === "uniskill_math") {
-                const { handleMath } = await import("./math");
-                nativeResponse = await handleMath(syntheticRequest, env);
-            } else if (normalizedSkillName === "uniskill_time") {
-                const { handleTime } = await import("./time");
-                nativeResponse = await handleTime(syntheticRequest, env);
-            } else if (normalizedSkillName === "uniskill_crypto_util") {
-                const { handleCrypto } = await import("./crypto_util");
-                nativeResponse = await handleCrypto(syntheticRequest, env);
-            } else if (normalizedSkillName === "uniskill_geo") {
-                const { handleGeo } = await import("./geo");
-                nativeResponse = await handleGeo(syntheticRequest, env);
-            } else if (normalizedSkillName === "uniskill_github_tracker") {
-                const { handleGithubTracker } = await import("./github-tracker");
-                nativeResponse = await handleGithubTracker(syntheticRequest, env);
-            } else if (normalizedSkillName === "uniskill_smart_chart") {
-                const { executeSmartChart } = await import("./uniskill-smart-chart");
-                const result = await executeSmartChart(params, env);
-                nativeResponse = new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } });
-            } else {
-                return errorResponse(`Native handler not found for: ${normalizedSkillName}`, 500);
-            }
-
-            if (!nativeResponse.ok) {
-                const errBody = await nativeResponse.clone().text();
-                // 🌟 Tactic B: 软拼接底线防线
-                let finalErrBody = errBody;
-                if (preventionPatch) {
-                    finalErrBody = `${errBody}\n\n[IMPORTANT NOTE FROM UNISKILL EXPERIENCE MODULE]: We've seen this before. Avoid previous pitfalls by trying: ${preventionPatch}`;
-                    nativeResponse = new Response(finalErrBody, { status: nativeResponse.status, headers: nativeResponse.headers });
-                }
-                ctx.waitUntil(recordSkillCall(
-                    env, callerUid, finalSkillName, requestId, 0, "credits",
-                    { 
-                        status_code: nativeResponse.status, 
-                        execution_status: 'FAILED', 
-                        error_message: errBody,
-                        latency_ms: Date.now() - startTime,
-                        metadata: debugLog
-                    },
-                    creditsPerCall, displayName, tags
-                ));
-                return nativeResponse;
-            }
-
-            finalData = await nativeResponse.json();
-
-            // apply dynamic plugin hook
-            const hookName = implementation?.plugin_hook || unified.plugin_hook;
-            if (hookName && (formatters as any)[hookName]) {
-                debugLog.push({ event: "formatter_applied", hook: hookName });
-                const formatted = (formatters as any)[hookName](finalData);
-                try {
-                    finalData = typeof formatted === 'string' ? JSON.parse(formatted) : formatted;
-                } catch { finalData = { result: formatted }; }
-            }
-        } else {
-            debugLog.push({ event: "execution_start", type: "executor" });
-            let rawSecrets: Record<string, string> = {};
-
-            const mergeSecrets = (target: Record<string, string>, raw: string | null) => {
-                if (!raw) return target;
-                try {
-                    const parsed = JSON.parse(raw);
-                    if (Array.isArray(parsed)) {
-                        parsed.forEach((item: any) => { if (item.key && item.value) target[item.key] = item.value; });
-                    } else if (typeof parsed === 'object') {
-                        Object.assign(target, parsed);
-                    }
-                } catch (e) {
-                    debugLog.push({ event: "secrets_parse_error", error: (e as any).message });
-                }
-                return target;
-            };
-
-            try {
-                const userSecretsRaw = await env.UNISKILL_KV.get(SkillKeys.secrets(callerUid));
-                mergeSecrets(rawSecrets, userSecretsRaw);
-                const skillSecretsRaw = await env.UNISKILL_KV.get(SkillKeys.skillSecrets(callerUid, skillName!));
-                mergeSecrets(rawSecrets, skillSecretsRaw);
-            } catch (e) {
-                debugLog.push({ event: "secrets_io_error", error: (e as any).message });
-            }
-
-            // 实时解密
-            const decryptedSecrets: Record<string, string> = {};
-            let decryptedCount = 0;
-            for (const [key, val] of Object.entries(rawSecrets)) {
-                try {
-                    if (val && typeof val === 'string' && val.split('.').length === 3) {
-                        decryptedSecrets[key] = decryptSecret(val, env.MASTER_ENCRYPTION_KEY);
-                        decryptedCount++;
-                    } else {
-                        decryptedSecrets[key] = val;
-                    }
-                } catch (e: any) {
-                    throw new Error(`Failed to decrypt secret ${key}. Verify MASTER_ENCRYPTION_KEY.`);
-                }
-            }
-            debugLog.push({ event: "secrets_loaded", total: Object.keys(rawSecrets).length, decrypted: decryptedCount });
-
-            try {
-                finalData = await executeSkill(implementation, params, env, decryptedSecrets, !isPrivate, preventionPatch);
-            } catch (execErr: any) {
-                // 🌟 Tactic B: 软拼接底线防线
-                let errorMessage = execErr.message;
-                if (preventionPatch) {
-                    errorMessage = `${errorMessage}\n\n[IMPORTANT NOTE FROM UNISKILL EXPERIENCE MODULE]: We've seen this before. Avoid previous pitfalls by trying: ${preventionPatch}`;
-                }
-                ctx.waitUntil(recordSkillCall(
-                    env, callerUid, finalSkillName, requestId, 0, "credits",
-                    { 
-                        status_code: 502, 
-                        execution_status: 'FAILED', 
-                        error_message: errorMessage,
-                        latency_ms: Date.now() - startTime,
-                        metadata: debugLog
-                    },
-                    creditsPerCall, displayName, tags
-                ));
-                return errorResponse(errorMessage, 502);
-            }
-
-            const hookName = implementation.plugin_hook || unified.plugin_hook;
-            if (hookName && (formatters as any)[hookName]) {
-                debugLog.push({ event: "formatter_applied", hook: hookName });
-                const formatted = (formatters as any)[hookName](finalData);
-                try {
-                    finalData = typeof formatted === 'string' ? JSON.parse(formatted) : formatted;
-                } catch { finalData = { result: formatted }; }
-            }
-        }
-
-        // ── Step 7: Post-Execution Billing ──
-        if (creditsPerCall > 0) {
-            ctx.waitUntil(deductCredit(
-                env, env.UNISKILL_KV, callerUid, currentCredits, creditsPerCall,
-                env.VERCEL_WEBHOOK_URL, env.ADMIN_KEY, finalSkillName, keyHash, requestId, displayName // 🌟 透传 purified displayName
-            ));
-        }
-
-        // ── Step 8: Final Response ──
-        const remaining = Math.round((currentCredits - creditsPerCall) * 100) / 100;
-
-        // 🌟 记录交易：SUCCESS (200)
-        ctx.waitUntil(recordSkillCall(
-            env, callerUid, finalSkillName, requestId, creditsPerCall, "credits",
-            { 
-                status_code: 200, 
-                execution_status: 'SUCCESS', 
-                error_message: null,
-                latency_ms: Date.now() - startTime,
-                metadata: debugLog
-            },
-            creditsPerCall, displayName, tags, skillUid // 🌟 传入 skill_uid
-        ));
-
-        return successResponse({
-            ...finalData,
-            _uniskill: {
-                credits_charged: creditsPerCall,
-                remaining,
-                request_id: requestId,
-                version: "v1.1.0" 
-            }
-        }, 200);
-
-    } catch (error: any) {
-        console.error(`[Execution Flow Error]`, error);
-        ctx.waitUntil(recordSkillCall(
-            env, callerUid ?? "unknown", finalSkillName, requestId, 0, "credits",
-            { 
-                status_code: 500, 
-                execution_status: 'FAILED', 
-                error_message: error.message,
-                latency_ms: Date.now() - startTime,
-                metadata: debugLog
-            },
-            creditsPerCall, displayName, tags, skillUid // 🌟 传入 skill_uid
-        ));
-        return new Response(JSON.stringify({ error: error.message }), {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-    }
+  const data = await response.json() as { secrets: Record<string, string> };
+  return data.secrets || {};
 }
 
+// ============================================================
+// 辅助函数：计费队列分发 (基于规范化后的 Skill Name)
+// ============================================================
+
+async function enqueueBillingEvent(env: Env, manifest: SkillManifest, payerId: string, result: CliExecutionResult) {
+  if (!env.BILLING_QUEUE) return;
+
+  const durationSeconds = Math.ceil((result.duration_ms ?? 0) / 1000);
+  const perSecondFee = manifest.cost.per_second_cents ?? 0;
+
+  // 基础设施计费逻辑：仅成功时收取按秒能耗费，失败仅收基础费
+  const infraFee = result.status === 'SUCCESS' ? perSecondFee * durationSeconds : 0;
+
+  const event: BillingEvent = {
+    skill_name: manifest.skill_name, // 对齐系统主键
+    payer_id: payerId,
+    status: result.status,
+    base_fee_cents: manifest.cost.base_fee_cents,
+    infrastructure_fee_cents: infraFee,
+    duration_ms: result.duration_ms || 0,
+    timestamp: new Date().toISOString(),
+    metadata: {
+      display_name: manifest.display_name,
+      execution_status: result.status
+    }
+  };
+
+  try {
+    await env.BILLING_QUEUE.send(event);
+  } catch (err) {
+    console.error(`[execute-skill] Billing push failed:`, err);
+  }
+}
+
+// ============================================================
+// 辅助函数：加载清单与兼容性映射 (映射系统的真实 KV 定义)
+// ============================================================
+
+async function loadSkillManifest(env: Env, skillName: string, payerId: string): Promise<SkillManifest | null> {
+  const kv = env.SKILLS_KV || env.UNISKILL_KV;
+  
+  // 查找顺序：私人 (uid:name) -> 官方 (official:name) -> 市场 (market:name)
+  let raw: string | null = null;
+  const searchPaths = [
+    SkillKeys.private(payerId, skillName),
+    SkillKeys.official(skillName),
+    SkillKeys.market(skillName)
+  ];
+
+  for (const path of searchPaths) {
+    raw = await kv.get(path);
+    if (raw) break;
+  }
+
+  if (!raw) return null;
+
+  try {
+    const data = JSON.parse(raw);
+    const spec = SkillParser.parse(raw); // 确保内部 spec 使用 Parser 提取的标准逻辑
+
+    // 🌟 系统核心逻辑桥接：兼容各种命名变体，回退至 KV Key 中的名字
+    return {
+      skill_name: data.id || data.skill_name || data.name || skillName,
+      name: data.name || skillName,
+      display_name: data.display_name || data.meta?.name,
+      implementation: spec.implementation || data.config || data.implementation,
+      cost: {
+        // 兼容旧版 credits_per_call 至基础费
+        base_fee_cents: Number(data.cost?.base_fee_cents ?? data.credits_per_call ?? data.cost_per_call ?? 1),
+        per_second_cents: Number(data.cost?.per_second_cents ?? 0)
+      }
+    };
+  } catch {
+    return null;
+  }
+}
