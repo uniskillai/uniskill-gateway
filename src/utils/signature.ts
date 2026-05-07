@@ -115,7 +115,8 @@ export async function verifySignatureAuth(request: Request, env: any): Promise<s
 
     // ── 2. 重建规范字符串并验证签名 ──────────────────────────────────────
     const url       = new URL(request.url);
-    const canonical = buildCanonical(request.method, url.pathname, nonce, timestamp);
+    const pathWithSearch = url.pathname + url.search;
+    const canonical = buildCanonical(request.method, pathWithSearch, nonce, timestamp);
     const recovered = recoverEthAddress(canonical, signature);
 
     if (!recovered || recovered !== wallet.toLowerCase()) {

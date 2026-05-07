@@ -314,16 +314,26 @@ export default {
       // 路由：MCP SSE 握手端点 (Logic: Create a new stateful DO instance)
       if (cleanPath === "/v1/mcp/sse" && method === "GET") {
         console.log(`[DEBUG] MCP SSE Handshake requested`);
+        const userUid = await authenticate(request, env);
+        if (!userUid) return errorResponse("Unauthorized", 401);
+
         const id = env.MCP_SESSION.newUniqueId();
         const stub = env.MCP_SESSION.get(id);
         
         // 透传请求给 DO，DO 会在内存中维护这个连接 (Proxy to DO)
-        const response = await stub.fetch(request);
+        const newReq = new Request(request);
+        newReq.headers.set("X-USK-Internal-Uid", userUid);
+
+        const response = await stub.fetch(newReq);
         return response;
       }
 
       // 路由：MCP 消息接收端点 (Logic: Route to existing DO via session_id)
+      // 安全说明：身份已在 SSE 握手时完成鉴权并锁定到 DO 内存，无需重复验证签名
       if (cleanPath === "/v1/mcp/messages" && method === "POST") {
+        const userUid = await authenticate(request, env);
+        if (!userUid) return errorResponse("Unauthorized", 401);
+
         const sessionId = url.searchParams.get("session_id");
         console.log(`[DEBUG] MCP Message received. session_id=${sessionId}`);
         if (!sessionId) {
@@ -333,7 +343,11 @@ export default {
         try {
           const doId = env.MCP_SESSION.idFromString(sessionId);
           const stub = env.MCP_SESSION.get(doId);
-          return await stub.fetch(request);
+
+          const newReq = new Request(request);
+          newReq.headers.set("X-USK-Internal-Uid", userUid);
+
+          return await stub.fetch(newReq);
         } catch (e) {
           console.error(`[DEBUG] MCP Message fetch failure:`, e);
           return errorResponse("Invalid session_id", 400);
@@ -406,7 +420,7 @@ export default {
  *   提取 Bearer Key → SHA-256 哈希 → KV 查询 → 返回 userUid
  */
 async function authenticate(request: Request, env: Env): Promise<string | null> {
-  // ── 路径 A：本地签名模式（新） ──────────────────────────────────────
+  // 仅支持本地签名模式（X-USK-Wallet + X-USK-Signature）
   const walletHeader = request.headers.get("X-USK-Wallet");
   if (walletHeader) {
     const uid = await verifySignatureAuth(request, env);
@@ -414,19 +428,10 @@ async function authenticate(request: Request, env: Env): Promise<string | null> 
       console.log(`[Auth] Signature mode: uid=${uid}`);
       return uid;
     }
-    // 签名验证失败时直接拒绝，不回落到 Key 模式（防止降级攻击）
     console.warn("[Auth] Signature verification failed for wallet:", walletHeader);
     return null;
   }
 
-  // ── 路径 B：静态 Bearer Key 模式（旧，向后兼容）────────────────────
-  const { extractBearerKey, isValidKeyFormat } = await import("./utils/auth");
-  const rawKey = extractBearerKey(request);
-
-  if (!rawKey || !isValidKeyFormat(rawKey)) return null;
-
-  const keyHash = await hashKey(rawKey);
-  const { getUserUid } = await import("./utils/billing");
-
-  return await getUserUid(env.UNISKILL_KV, keyHash, env);
+  console.warn("[Auth] No wallet header found. Access denied.");
+  return null;
 }

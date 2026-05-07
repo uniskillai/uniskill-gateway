@@ -51,19 +51,23 @@ interface BillingEvent {
 // 核心路由 Handler (Cloudflare Worker fetch handler)
 // ============================================================
 
-export async function handleExecuteSkill(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+export async function handleExecuteSkill(request: Request, env: Env, ctx: ExecutionContext, preAuthUid?: string): Promise<Response> {
   const startTime = Date.now();
   
   try {
     // 1. 身份验证 (Authentication & Authorization)
-    // 锁定 payer_id 来源，防止身份伪造
-    const authHeader = request.headers.get("Authorization") || "";
-    const rawKey = authHeader.replace("Bearer ", "").trim();
-    if (!rawKey.startsWith("us-")) return errorResponse("Invalid Key Format", 401);
+    let payer_id = preAuthUid;
+
+    if (!payer_id) {
+      // 仅支持本地签名模式鉴权
+      const walletHeader = request.headers.get("X-USK-Wallet");
+      if (walletHeader) {
+        const { verifySignatureAuth } = await import("../utils/signature");
+        payer_id = await verifySignatureAuth(request, env) || undefined;
+      }
+    }
     
-    const keyHash = await hashKey(rawKey);
-    const payer_id = await getUserUid(env.UNISKILL_KV, keyHash, env);
-    if (!payer_id) return errorResponse("Unauthorized", 401);
+    if (!payer_id) return errorResponse("Unauthorized: Signature required", 401);
 
     // 2. 解析请求负荷 (Payload Parsing)
     let body: any = {};
@@ -82,8 +86,8 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
     if (!manifest) return errorResponse(`Skill [${skillName}] not found`, 404);
 
     // 4. 配额与速率限制检查 (Pre-execution check)
-    const profile = await getProfile(env.UNISKILL_KV, payer_id, env, keyHash);
-    const rlResult = await checkRateLimit(keyHash, profile.tier, env);
+    const profile = await getProfile(env.UNISKILL_KV, payer_id, env);
+    const rlResult = await checkRateLimit(payer_id, profile.tier, env);
     if (!rlResult.isAllowed) return errorResponse(`Rate limit exceeded`, 429);
 
     // 5. 根据 Implementation 类型进行分发

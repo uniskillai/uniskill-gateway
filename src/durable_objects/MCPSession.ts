@@ -120,6 +120,7 @@ export class MCPSession {
   private env: any; // Will be properly typed
   private controller: ReadableStreamDefaultController | null = null;
   private storedAuthHeader: string = ""; // 🌟 核心状态：持久化存储握手时的鉴权信息
+  private storedUserUid: string = "";    // 🌟 核心状态：持久化存储握手时的用户 UID
 
   constructor(ctx: DurableObjectState, env: any) {
     this.ctx = ctx;
@@ -132,6 +133,7 @@ export class MCPSession {
       console.log(`[DO] 🔗 New SSE Connection establishing...`);
       // 🌟 核心修复：在握手阶段锁定身份 (Lock identity during handshake)
       this.storedAuthHeader = request.headers.get("Authorization") || "";
+      this.storedUserUid = request.headers.get("X-USK-Internal-Uid") || "";
 
       const stream = new ReadableStream({
         start: (controller) => {
@@ -156,7 +158,7 @@ export class MCPSession {
               } else {
                   clearInterval(heartbeatTimer);
               }
-          }, 5000);
+          }, 1000);
           
           // 在 ctx.waitUntil 中记录计时器，防止 DO 被意外回收 (Wait until helper can track timers if needed)
         },
@@ -272,74 +274,63 @@ export class MCPSession {
 
             // 3. 隔离处理私有工具 (Isolate private tools fetching)
             try {
-                // 安全获取 authHeader (Safely get authHeader, avoid undefined crashes)
-                // 🌟 核心逻辑：保留会话全生命周期身份感知 (Keep session-wide identity awareness)
-                const authHeader = payload?.authHeader || originalRequest.headers.get("Authorization") || this.storedAuthHeader || "";
-                const rawKey = authHeader.replace("Bearer ", "").trim();
+                const userUid = this.storedUserUid;
                 
-                if (rawKey.startsWith("us-")) {
-                    const keyHash = await hashKey(rawKey);
-                    const userUid = await getUserUid(this.env.UNISKILL_KV, keyHash, this.env);
+                if (userUid && userUid !== "public" && userUid.trim().length > 0) {
                     const username = await getUsername(this.env.UNISKILL_KV, userUid, this.env);
+                    const list = await this.env.UNISKILL_KV.list({ prefix: `skill:private:${userUid}:` });
+                    const fetchPromises = list.keys.map(async (key: any) => {
+                        const raw = await this.env.UNISKILL_KV.get(key.name);
+                        if (!raw) return null;
 
-                    if (userUid && userUid.trim().length > 0) {
-                        const list = await this.env.UNISKILL_KV.list({ prefix: `skill:private:${userUid}:` });
-                        const fetchPromises = list.keys.map(async (key: any) => {
-                            const raw = await this.env.UNISKILL_KV.get(key.name);
-                            if (!raw) return null;
-
+                        try {
+                            // 1. 尝试作为大一统 JSON 解析 (Try parsing as Unified JSON)
                             try {
-                                // 1. 尝试作为大一统 JSON 解析 (Try parsing as Unified JSON)
-                                try {
-                                    const toolRaw = JSON.parse(raw);
-                                    const baseName = toolRaw.id || key.name.split(':').pop();
+                                const toolRaw = JSON.parse(raw);
+                                const baseName = toolRaw.id || key.name.split(':').pop();
 
-                                    // 🌟 MCP Naming: Use username_skillname
-                                    // 逻辑：替换非法字符并确保长度符合规范 (^[a-zA-Z0-9_-]{1,64}$)
-                                    const safeUsername = username.replace(/[^a-zA-Z0-9_-]/g, '_');
-                                    const mcpName = `${safeUsername}_${baseName}`.slice(0, 64);
+                                // 🌟 MCP Naming: Use username_skillname
+                                const safeUsername = username.replace(/[^a-zA-Z0-9_-]/g, '_');
+                                const mcpName = `${safeUsername}_${baseName}`.slice(0, 64);
 
-                                    return {
-                                        name: mcpName, 
-                                        description: toolRaw.meta?.description || toolRaw.description || "Private tool",
-                                        inputSchema: toolRaw.config?.parameters || toolRaw.meta?.parameters || toolRaw.parameters || { type: "object", properties: {} }
-                                    };
-                                } catch (jsonErr) {
-                                    // 2. 回退：作为原始 Markdown 解析 (Fallback to Markdown parsing)
-                                    const toolSpec = SkillParser.parse(raw);
-                                    const baseName = toolSpec.name || key.name.split(':').pop();
-                                    
-                                    const safeUsername = username.replace(/[^a-zA-Z0-9_-]/g, '_');
-                                    const mcpName = `${safeUsername}_${baseName}`.slice(0, 64);
+                                return {
+                                    name: mcpName, 
+                                    description: toolRaw.meta?.description || toolRaw.description || "Private tool",
+                                    inputSchema: toolRaw.config?.parameters || toolRaw.meta?.parameters || toolRaw.parameters || { type: "object", properties: {} }
+                                };
+                            } catch (jsonErr) {
+                                // 2. 回退：作为原始 Markdown 解析 (Fallback to Markdown parsing)
+                                const toolSpec = SkillParser.parse(raw);
+                                const baseName = toolSpec.name || key.name.split(':').pop();
+                                
+                                const safeUsername = username.replace(/[^a-zA-Z0-9_-]/g, '_');
+                                const mcpName = `${safeUsername}_${baseName}`.slice(0, 64);
 
-                                    return {
-                                        name: mcpName,
-                                        description: toolSpec.description || "Private tool (parsed from Markdown)",
-                                        inputSchema: toolSpec.parameters || { type: "object", properties: {} }
-                                    };
-                                }
-                            } catch (parseErr) {
-                                return null; // 忽略单个私有工具解析错误 (Ignore individual private tool parse error)
+                                return {
+                                    name: mcpName,
+                                    description: toolSpec.description || "Private tool (parsed from Markdown)",
+                                    inputSchema: toolSpec.parameters || { type: "object", properties: {} }
+                                };
                             }
-                        });
-                        
-                        const privateTools = (await Promise.all(fetchPromises)).filter(Boolean);
-                        
-                        // 合并私有工具 (Merge private tools)
-                        for (const pt of privateTools) {
-                            const ptName = (pt as any).name;
-                            const index = allTools.findIndex(t => t.name === ptName);
-                            if (index !== -1) {
-                                allTools[index] = pt;
-                            } else {
-                                allTools.push(pt);
-                            }
+                        } catch (parseErr) {
+                            return null;
+                        }
+                    });
+                    
+                    const privateTools = (await Promise.all(fetchPromises)).filter(Boolean);
+                    
+                    for (const pt of privateTools) {
+                        const ptName = (pt as any).name;
+                        const index = allTools.findIndex(t => t.name === ptName);
+                        if (index !== -1) {
+                            allTools[index] = pt;
+                        } else {
+                            allTools.push(pt);
                         }
                     }
                 }
             } catch (authErr) {
-                console.error("[DO] Private tools auth/fetch error. Skipping private tools.", authErr);
-                // 鉴权或私有库读取失败，直接忽略，保证公共工具能返回 (If auth fails, just skip so public tools can still be returned)
+                console.error("[DO] Private tools fetch error:", authErr);
             }
 
             // 最终赋值 (Final assignment)
@@ -389,56 +380,59 @@ export class MCPSession {
 
             // 🔒 安全拦截：私有工具必须具备合法的身份会话
             if (!isOfficial && (!callerUid || callerUid === "public")) {
-                return {
+                result = {
                     content: [{ type: "text", text: `[Gateway Error] Private tool execution failed: Identity lost or unauthorized access.` }],
                     isError: true
                 };
-            }
-
-            const executeUrl = new URL(originalRequest.url);
-            executeUrl.pathname = `/v1/execute`;
-
-            // 🌟 2. 组装绝对严谨的底层信封 (Assemble strict internal envelope)
-            console.log(`[DO][DEBUG] Internal Request to /v1/execute: skill_name=${actualSkillName}, user_uid=${isOfficial ? "public" : callerUid}`);
-            const internalRequest = new Request(executeUrl.toString(), {
-                method: "POST",
-                headers: {
-                    "Authorization": authHeader,
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    skill_name: actualSkillName,
-                    skill_id: toolName, 
-                    user_uid: callerUid, // 🌟 核心修复：始终传输真实的调用者 UID，防止 UUID 格式报错
-                    payload: toolArguments,            
-                    params: toolArguments              
-                })
-            });
-
-            const response = await handleExecuteSkill(internalRequest, this.env, this.ctx as any); 
-            console.log(`[DO][DEBUG] handleExecuteSkill response status: ${response.status}`);            
-            if (!response.ok) {
-                const errorText = await response.text();
-                finalOutput = `[Gateway Error] ${response.status}: ${errorText}`;
-                isError = true;
             } else {
-                const resultRaw = await response.text();
-                try {
-                    const parsed = JSON.parse(resultRaw);
-                    finalOutput = formatToolResponse(parsed);
-                } catch {
-                    finalOutput = formatToolResponse(resultRaw);
+                const executeUrl = new URL(originalRequest.url);
+                executeUrl.pathname = `/v1/execute`;
+
+                // 🌟 2. 组装绝对严谨的底层信封 (Assemble strict internal envelope)
+                const internalHeaders = new Headers({
+                    "Content-Type": "application/json"
+                });
+                if (authHeader) internalHeaders.set("Authorization", authHeader);
+
+                const internalRequest = new Request(executeUrl.toString(), {
+                    method: "POST",
+                    headers: internalHeaders,
+                    body: JSON.stringify({
+                        skill_name: actualSkillName,
+                        skill_id: toolName, 
+                        user_uid: callerUid, // 🌟 核心修复：始终传输真实的调用者 UID，防止 UUID 格式报错
+                        payload: toolArguments,            
+                        params: toolArguments              
+                    })
+                });
+
+                const response = await handleExecuteSkill(internalRequest, this.env, this.ctx as any, callerUid !== "public" ? callerUid : undefined); 
+                console.log(`[DO][DEBUG] handleExecuteSkill response status: ${response.status}`);            
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    finalOutput = `[Gateway Error] ${response.status}: ${errorText}`;
+                    isError = true;
+                } else {
+                    const resultRaw = await response.text();
+                    try {
+                        const parsed = JSON.parse(resultRaw);
+                        finalOutput = formatToolResponse(parsed);
+                    } catch {
+                        finalOutput = formatToolResponse(resultRaw);
+                    }
                 }
+
+                result = {
+                    content: [{ type: "text", text: finalOutput }],
+                    isError: isError
+                };
             }
         } catch (apiError: any) {
-            finalOutput = `[Tool Execution Failed] Upstream API Error: ${apiError.message || "Unknown error"}`;
-            isError = true;
+            result = {
+                content: [{ type: "text", text: `[Tool Execution Failed] Upstream API Error: ${apiError.message || "Unknown error"}` }],
+                isError: true
+            };
         }
-
-        result = {
-            content: [{ type: "text", text: finalOutput }],
-            isError: isError
-        };
     }
     else if (method === "initialize") {
         result = {
@@ -451,7 +445,7 @@ export class MCPSession {
     // 推送执行结果至 SSE 控制器 (Push result to SSE)
     if (id !== undefined) {
         const responsePayload = { jsonrpc: "2.0", id: id, result: result };
-        const sseMessage = `event: message\ndata: ${JSON.stringify(responsePayload)}\n\n`;
+        const sseMessage = `data: ${JSON.stringify(responsePayload)}\n\n`;
         
         if (this.controller) {
             try {
@@ -473,11 +467,7 @@ export class MCPSession {
    * Helper to resolve the calling user's UID from the session or request.
    */
   private async getCallerUid(payload: any, originalRequest: Request): Promise<string> {
-    const authHeader = payload.authHeader || originalRequest.headers.get("Authorization") || this.storedAuthHeader || "";
-    if (authHeader.startsWith("Bearer us-")) {
-        const keyHash = await hashKey(authHeader.replace("Bearer ", "").trim());
-        return await getUserUid(this.env.UNISKILL_KV, keyHash, this.env);
-    }
-    return "public";
+    const internalUid = originalRequest.headers.get("X-USK-Internal-Uid") || this.storedUserUid;
+    return internalUid || "public";
   }
 }
