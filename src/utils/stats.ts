@@ -38,27 +38,26 @@ export async function recordSkillCall(
     const supabase = getSupabaseClient(env);
     const OFFICIAL_UUID = '00000000-0000-0000-0000-000000000001';
     
-    // UUID Validator
-    const isUUID = (uuid: any) => typeof uuid === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid);
+    // UUID Validator (Relaxed)
+    const isValidId = (id: any) => typeof id === 'string' && id.length > 0;
 
     try {
         const rpcPayload = {
-            p_user_uid: isUUID(userUid) ? userUid : OFFICIAL_UUID,
+            p_user_uid: userUid,
             p_skill_name: skillName,
-            p_source_skill_uid: isUUID(skillUid) ? skillUid : OFFICIAL_UUID, 
+            p_source_skill_uid: skillUid || OFFICIAL_UUID, 
             p_payment_type: paymentType,
             p_request_id: requestId,
             p_cost: credits,
             
-            // 🌟 状态与诊断字段拆解
             p_status_code: txStatus.status_code,
             p_execution_status: txStatus.execution_status,
             p_error_message: txStatus.error_message,
             p_latency_ms: txStatus.latency_ms,
             p_metadata: { 
-                trace: txStatus.metadata || [],
-                original_skill: skillUid || skillName,
-                original_user: userUid
+                ...txStatus.metadata,
+                display_name: display_name,
+                tags: tags
             }, 
             
             p_credits_per_call: creditsPerCall,
@@ -66,23 +65,33 @@ export async function recordSkillCall(
             p_tags: tags
         };
 
-        // 🌟 诊断日志：在发送前打印完整 Payload
-        console.log(`[Stats][Diagnostic] Sending RPC to Supabase for ${skillName}...`);
-        // console.log(`[Stats][Payload] ${JSON.stringify(rpcPayload)}`); // 调试时可开启
+        console.log(`[Stats] Recording usage for ${skillName} (User: ${userUid.slice(-6)})...`);
 
-        // 逻辑：调用 Supabase RPC 记录调用
-        const { error } = await supabase.rpc('record_skill_usage', rpcPayload);
-
-        if (error) {
-            console.error(`[Stats] RPC error [${paymentType}] for [${skillName}] status:`, {
-                code: error.code,
-                message: error.message,
-                details: error.details,
-                hint: error.hint
+        // 1. 直接尝试写入日志表 (Direct insert fallback)
+        const { error: insertError } = await supabase
+            .from('skill_usage_logs')
+            .insert({
+                user_uid: userUid,
+                skill_name: skillName,
+                request_id: requestId,
+                status_code: txStatus.status_code,
+                execution_status: txStatus.execution_status,
+                latency_ms: txStatus.latency_ms,
+                cost_credits: credits,
+                metadata: rpcPayload.p_metadata
             });
+
+        if (insertError) {
+            console.error(`[Stats] Direct insert failed:`, insertError.message);
+        }
+
+        // 2. 调用 RPC (Legacy/Unified logic)
+        const { error: rpcError } = await supabase.rpc('record_skill_usage', rpcPayload);
+
+        if (rpcError) {
+            console.error(`[Stats] RPC error:`, rpcError.message);
         } else {
-            const shortUid = (userUid && typeof userUid === 'string') ? userUid.slice(-6) : 'anon';
-            console.log(`[Stats] Recorded: [${paymentType}] skill=${skillName} latency=${txStatus.latency_ms}ms status=${txStatus.execution_status} user=...${shortUid}`);
+            console.log(`[Stats] Successfully recorded: skill=${skillName} user=...${userUid.slice(-6)}`);
         }
     } catch (err) {
         console.error(`[Stats] Unexpected error recording call for ${skillName}:`, err);
