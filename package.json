@@ -22,6 +22,8 @@
     "wrangler": "^4.69.0"
   },
   "dependencies": {
+    "@noble/curves": "^1.9.2",
+    "@noble/hashes": "^1.8.0",
     "@supabase/supabase-js": "^2.98.0",
     "yaml": "^2.8.2"
   }

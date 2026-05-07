@@ -1,6 +1,6 @@
 // src/index.ts
-// Logic: Gateway entry point using key-based authentication
-// 职责：环境类型声明 + 请求路由分发 + 全局中间件（统一鉴权与平台化执行）
+// Logic: Gateway entry point — supports both Bearer Key and local signing mode
+// 职责：环境类型声明 + 请求路由分发 + 全局中间件（双模式鉴权 + 平台化执行）
 
 import { hashKey } from "./utils/auth";
 import { SkillKeys } from "./utils/skill-keys";
@@ -9,6 +9,8 @@ import { handleExecuteSkill } from "./routes/execute-skill";
 import { handleAuthVerify } from "./routes/auth";
 import { errorResponse, corsHeaders, successResponse } from "./utils/response";
 import { SkillParser } from "./engine/parser";
+import { verifySignatureAuth } from "./utils/signature";
+import { handleRegisterSession, handleRevokeSession, handleSessionStatus } from "./routes/session";
 export { MCPSession } from "./durable_objects/MCPSession";
 
 // ── 环境变量类型声明 ──────────────────────────────────────────
@@ -262,6 +264,39 @@ export default {
         return handleSyncSkill(request, env);
       }
 
+      // ── Session Key 管理端点（本地签名模式）──────────────────────────────────
+      // 安全：全部需要 ADMIN_KEY，由 Next.js 后端代理调用，普通用户不可直接访问
+
+      // 路由：注册 Session Key
+      if (cleanPath === "/v1/session/register" && method === "POST") {
+        const authHeader = request.headers.get("Authorization") || "";
+        const adminSecret = authHeader.replace("Bearer ", "").trim();
+        if (adminSecret !== env.ADMIN_KEY) {
+          return errorResponse("Unauthorized Admin Access", 401);
+        }
+        return handleRegisterSession(request, env);
+      }
+
+      // 路由：吊销 Session Key
+      if (cleanPath === "/v1/session/revoke" && method === "DELETE") {
+        const authHeader = request.headers.get("Authorization") || "";
+        const adminSecret = authHeader.replace("Bearer ", "").trim();
+        if (adminSecret !== env.ADMIN_KEY) {
+          return errorResponse("Unauthorized Admin Access", 401);
+        }
+        return handleRevokeSession(request, env);
+      }
+
+      // 路由：查询 Session Key 状态
+      if (cleanPath === "/v1/session/status" && method === "GET") {
+        const authHeader = request.headers.get("Authorization") || "";
+        const adminSecret = authHeader.replace("Bearer ", "").trim();
+        if (adminSecret !== env.ADMIN_KEY) {
+          return errorResponse("Unauthorized Admin Access", 401);
+        }
+        return handleSessionStatus(request, env);
+      }
+
       // 触发全局刷新的内部 API 端点 (Internal API to trigger global refresh)
       if (cleanPath === "/v1/admin/refresh-tools" && method === "POST") {
           // 只有您知道的超级密码 (Your secret admin token)
@@ -362,17 +397,36 @@ export default {
 };
 
 /**
- * 🔒 鉴权助手函数：验证并返回 User UID (Auth Helper: Resolve and Verify User Identity)
- * 逻辑：提取 Key → 哈希运算 → KV 查询 → 用户 UID
+ * 🔒 双模式鉴权助手函数 (Dual-mode Auth Helper)
+ *
+ * 优先路径 A — 本地签名模式（X-USK-Wallet + X-USK-Signature）:
+ *   验证 EIP-191 签名 → KV 查询 Session Key → 返回 userUid
+ *
+ * 回落路径 B — 静态 Bearer Key 模式（向后兼容）:
+ *   提取 Bearer Key → SHA-256 哈希 → KV 查询 → 返回 userUid
  */
 async function authenticate(request: Request, env: Env): Promise<string | null> {
-  const { extractBearerKey, isValidKeyFormat, hashKey } = await import("./utils/auth");
+  // ── 路径 A：本地签名模式（新） ──────────────────────────────────────
+  const walletHeader = request.headers.get("X-USK-Wallet");
+  if (walletHeader) {
+    const uid = await verifySignatureAuth(request, env);
+    if (uid) {
+      console.log(`[Auth] Signature mode: uid=${uid}`);
+      return uid;
+    }
+    // 签名验证失败时直接拒绝，不回落到 Key 模式（防止降级攻击）
+    console.warn("[Auth] Signature verification failed for wallet:", walletHeader);
+    return null;
+  }
+
+  // ── 路径 B：静态 Bearer Key 模式（旧，向后兼容）────────────────────
+  const { extractBearerKey, isValidKeyFormat } = await import("./utils/auth");
   const rawKey = extractBearerKey(request);
-  
+
   if (!rawKey || !isValidKeyFormat(rawKey)) return null;
-  
+
   const keyHash = await hashKey(rawKey);
   const { getUserUid } = await import("./utils/billing");
-  
+
   return await getUserUid(env.UNISKILL_KV, keyHash, env);
 }

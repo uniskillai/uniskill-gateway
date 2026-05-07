@@ -58,6 +58,14 @@ export const SkillKeys = {
     userUid: (keyHash: string) => `user:uid:${keyHash}`,
 
     /**
+     * Logic: Session Key mapping for local signing mode
+     * 逻辑：本地签名模式的 Session Key 映射
+     * key = session:key:{sessionPubKey(lowercase)}
+     * value = { userUid, walletAddress, expiresAt, createdAt, label }
+     */
+    sessionKey: (pubKey: string) => `session:key:${pubKey.toLowerCase()}`,
+
+    /**
      * Logic: Helper to identify the storage type from a raw KV key
      * 逻辑：辅助函数，从原始 KV Key 中识别存储类型
      */
