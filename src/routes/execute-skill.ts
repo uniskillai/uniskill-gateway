@@ -197,7 +197,14 @@ async function enqueueBillingEvent(env: Env, manifest: SkillManifest, payerId: s
   // ── 核心修复：如果 Queue 不可用，降级为直接写入 Supabase ──
   if (!env.BILLING_QUEUE) {
     console.log(`[execute-skill] No BILLING_QUEUE found, falling back to direct Supabase recording.`);
+    
+    // 获取当前余额并计算新余额
+    const profile = await getProfile(env.UNISKILL_KV, payerId, env);
+    const costCredits = totalCost / 100;
+    const newBalance = Math.round((profile.credits - costCredits) * 100) / 100;
+    
     try {
+      // 1. 记录日志 (RPC)
       await recordSkillCall(
         env,
         payerId,
@@ -219,8 +226,27 @@ async function enqueueBillingEvent(env: Env, manifest: SkillManifest, payerId: s
         manifest.cost.base_fee_cents,
         manifest.display_name
       );
+
+      // 2. 呼叫 Webhook 扣除积分 (新主权身份：payerId 即钱包地址)
+      if (env.ADMIN_KEY && payerId) {
+        const webhookUrl = env.VERCEL_WEBHOOK_URL || "https://uniskill.ai/api/webhook/sync-credits";
+        await fetch(webhookUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${env.ADMIN_KEY}`,
+          },
+          body: JSON.stringify({ 
+            hash: payerId, // 传递钱包地址
+            newBalance, 
+            skillName: manifest.skill_name, 
+            amount: -costCredits
+          }),
+        });
+        console.log(`[execute-skill] Sync webhook called for wallet: ${payerId}, newBalance: ${newBalance}`);
+      }
     } catch (err) {
-      console.error(`[execute-skill] Direct Supabase logging failed:`, err);
+      console.error(`[execute-skill] Direct Supabase logging or webhook failed:`, err);
     }
     return;
   }
