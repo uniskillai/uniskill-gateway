@@ -45,17 +45,6 @@ export const SkillKeys = {
      */
     tier: (uid: string) => `tier:${uid}`,
 
-    /**
-     * Logic: Stable user UID mapping indexed by key_hash
-     * 逻辑：稳定的用户 UID 映射关系，以 key_hash 索引
-     */
-    authHash: (keyHash: string) => `auth:hash:${keyHash}`,
-
-    /**
-     * LEGACY: Old user UID mapping format
-     * 废弃：旧版用户 UID 映射格式
-     */
-    userUid: (keyHash: string) => `user:uid:${keyHash}`,
 
     /**
      * Logic: Session Key mapping for local signing mode

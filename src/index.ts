@@ -2,11 +2,9 @@
 // Logic: Gateway entry point — supports both Bearer Key and local signing mode
 // 职责：环境类型声明 + 请求路由分发 + 全局中间件（双模式鉴权 + 平台化执行）
 
-import { hashKey } from "./utils/auth";
 import { SkillKeys } from "./utils/skill-keys";
 import { handleProvision } from "./routes/admin";
 import { handleExecuteSkill } from "./routes/execute-skill";
-import { handleAuthVerify } from "./routes/auth";
 import { errorResponse, corsHeaders, successResponse } from "./utils/response";
 import { SkillParser } from "./engine/parser";
 import { verifySignatureAuth } from "./utils/signature";
@@ -72,18 +70,9 @@ export default {
       // 路由：List All Skills
       if (method === "GET" && cleanPath === "/v1/skills") {
         console.log(`[DEBUG] GET Skills List`);
-        const authHeader = request.headers.get("Authorization") || "";
-        const rawKey = authHeader.replace("Bearer ", "").trim();
-        let keyHash: string | undefined = undefined;
-        if (rawKey.startsWith("us-")) {
-          keyHash = await hashKey(rawKey);
-        }
-
         let userUid: string | undefined = undefined;
-        if (keyHash) {
-          const { getUserUid } = await import("./utils/billing");
-          userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
-        }
+        // (Legacy key_hash based user lookup removed)
+
 
         const skills = [];
         const scanCategories = [
@@ -128,15 +117,9 @@ export default {
 
       // 路由：Export All Skills as OpenAI JSON Schema (Dynamic Discovery)
       if (method === "GET" && cleanPath === "/v1/skills/schema") {
-        const authHeader = request.headers.get("Authorization") || "";
-        const rawKey = authHeader.replace("Bearer ", "").trim();
         let userUid: string | undefined = undefined;
+        // (Legacy key_hash based user lookup removed)
 
-        if (rawKey.startsWith("us-")) {
-          const keyHash = await hashKey(rawKey);
-          const { getUserUid } = await import("./utils/billing");
-          userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
-        }
 
         const scanCategories = [
           { prefix: "skill:official:", source: "official" }
@@ -176,22 +159,12 @@ export default {
 
         if (!skillName) return errorResponse("Missing skill name", 400);
 
-        const authHeader = request.headers.get("Authorization") || "";
-        const rawKey = authHeader.replace("Bearer ", "").trim();
-        let keyHash: string | undefined = undefined;
-        if (rawKey.startsWith("us-")) {
-          keyHash = await hashKey(rawKey);
-        }
-
         let skillRaw: string | null = null;
         let source: "official" | "private" | "market" = "official";
 
-        if (keyHash) {
-          const { getUserUid } = await import("./utils/billing");
-          const userUid = await getUserUid(env.UNISKILL_KV, keyHash, env);
-          skillRaw = await env.UNISKILL_KV.get(SkillKeys.private(userUid, skillName));
-          if (skillRaw) source = "private";
-        }
+        // (Legacy key_hash based private skill lookup removed)
+        // Future: Add wallet-based private skill discovery here
+
         if (!skillRaw) {
           skillRaw = await env.UNISKILL_KV.get(SkillKeys.official(skillName));
           if (skillRaw) source = "official";
@@ -215,10 +188,6 @@ export default {
 
       // ── POST Routes (Execution & Integration) ──
 
-      // 路由：API Key 校验 (Ping)
-      if (cleanPath === "/v1/auth/verify" && method === "GET") {
-        return handleAuthVerify(request, env);
-      }
 
       // 路由：Analytics 统计接口 (Analytics Dashboard API)
       if (cleanPath === "/v1/analytics" && method === "GET") {

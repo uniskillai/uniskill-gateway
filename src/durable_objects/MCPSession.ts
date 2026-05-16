@@ -4,8 +4,7 @@
 
 import { handleExecuteSkill } from "../routes/execute-skill";
 import { SkillParser } from "../engine/parser";
-import { hashKey } from "../utils/auth";
-import { getUserUid, getUsername } from "../utils/billing";
+import { getUsername } from "../utils/billing";
 
 /**
  * 逻辑：网关级数据防腐层 - 强制将任何奇葩数据转化为 MCP 兼容的纯文本

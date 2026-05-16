@@ -5,7 +5,7 @@
 
 import { SkillKeys } from "./skill-keys";
 
-import { fetchUserDataFromDB, fetchUserDataByUid } from "../db";
+import { fetchUserDataByUid } from "../db";
 
 /**
  * In-Memory cache for reducing KV read latency.
@@ -31,11 +31,7 @@ export interface UserProfile {
     updated_at: number;
 }
 
-/**
- * Reads the unified user profile from KV.
- * Logic: Self-healing Migration (Profile -> Legacy Keys -> DB)
- */
-export async function getProfile(kv: KVNamespace, uid: string, env: any, keyHash?: string): Promise<UserProfile> {
+export async function getProfile(kv: KVNamespace, uid: string, env: any): Promise<UserProfile> {
     const cacheKey = `profile:${uid}`;
     const cached = getCache(cacheKey);
     if (cached) return cached;
@@ -60,14 +56,6 @@ export async function getProfile(kv: KVNamespace, uid: string, env: any, keyHash
     ]);
 
     let oldCredits = oldCreditsVal;
-    if (oldCredits === null && keyHash) {
-        // Even older: Try Hash-based key
-        oldCredits = await kv.get(`user:credits:${keyHash}`);
-        if (oldCredits !== null) {
-            console.log(`[Migration] Found very legacy hash-based credits for ${uid}`);
-        }
-    }
-
     let profile: UserProfile;
 
     if (oldCredits !== null || oldTier !== null) {
@@ -108,56 +96,12 @@ export async function getProfile(kv: KVNamespace, uid: string, env: any, keyHash
 /**
  * Reads the current credit balance for a user.
  */
-export async function getCredits(kv: KVNamespace, uid: string, env: any, keyHash?: string): Promise<number> {
-    const profile = await getProfile(kv, uid, env, keyHash);
+export async function getCredits(kv: KVNamespace, uid: string, env: any): Promise<number> {
+    const profile = await getProfile(kv, uid, env);
     return profile.credits;
 }
 
-/**
- * Retrieves the stable User UID for a key hash.
- * Stage 1 of Two-Stage Routing: Mapping Hash to stable Identity.
- */
-export async function getUserUid(kv: KVNamespace, keyHash: string, env: any): Promise<string> {
-    const cacheKey = `uid:${keyHash}`;
-    const cached = getCache(cacheKey);
-    if (cached) return cached;
 
-    // 1. Try New format: auth:hash:{hash}
-    let uid = await kv.get(SkillKeys.authHash(keyHash));
-    if (uid) {
-        setCache(cacheKey, uid);
-        return uid;
-    }
-
-    // 2. Self-healing Migration: Try Legacy format: user:uid:{hash}
-    uid = await kv.get(SkillKeys.userUid(keyHash));
-    if (uid) {
-        console.log(`[Migration] Moving auth hash mapping for ${keyHash.slice(-6)} to new format (Self-healing).`);
-        // Atomic self-healing: write new, delete old
-        await kv.put(SkillKeys.authHash(keyHash), uid, { expirationTtl: 86400 * 30 });
-        await kv.delete(SkillKeys.userUid(keyHash));
-        
-        setCache(cacheKey, uid);
-        return uid;
-    }
-
-    // 3. Fallback to Supabase (Source of Truth)
-    console.log(`[Identity] KV miss for UID map (hash: ...${keyHash.slice(-6)}), hitting DB.`);
-    const userData = await fetchUserDataFromDB(keyHash, env);
-    uid = userData.user_uid;
-    const username = userData.username || "anonymous";
-
-    // 4. Write-back to KV for future requests (New format)
-    if (uid && uid !== "00000000-0000-0000-0000-000000000000") {
-        await kv.put(SkillKeys.authHash(keyHash), uid, { expirationTtl: 86400 * 30 }); // Mapping is long-lived
-        setCache(cacheKey, uid);
-        
-        // Also ensure profile exists in KV with username
-        const profile = await getProfile(kv, uid, env, keyHash);
-        if (profile.username !== username) {
-            profile.username = username;
-            await kv.put(SkillKeys.profile(uid), JSON.stringify(profile));
-            setCache(`profile:${uid}`, profile);
         }
     }
 

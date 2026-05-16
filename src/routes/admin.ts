@@ -22,29 +22,17 @@ export async function handleProvision(request: Request, env: Env): Promise<Respo
 
     // ── Step 2: 解析请求体 ───────────────────────────────
     let initialCredits = DEFAULT_INITIAL_CREDITS;
-    let keyHash: string | undefined = undefined;
-    let userUid: string | undefined = undefined;
-    let userTier = "FREE";
-
-    try {
-        const body = await request.json() as any;
-        initialCredits = Number(body.credits ?? DEFAULT_INITIAL_CREDITS);
-        keyHash = body.key_hash || body.hash;
-        userUid = body.user_uid || body.uid;
-        if (body.tier) userTier = body.tier.toUpperCase();
-    } catch { /* ignore */ }
-
-    if (!keyHash || !userUid) {
+    if (!userUid) {
         return new Response(
-            JSON.stringify({ success: false, error: "Missing required fields: key_hash or user_uid" }),
+            JSON.stringify({ success: false, error: "Missing required field: user_uid" }),
             { status: 400, headers: { "Content-Type": "application/json" } }
         );
     }
 
     // ── Step 3: 写入 KV（核心：哈希解耦与 UID 绑定）───────────────
     
-    // 1. 建立 Hash -> UID 的映射 (New Format: auth:hash:{hash})
-    await env.UNISKILL_KV.put(SkillKeys.authHash(keyHash), userUid);
+    // 1. (Legacy key mapping removed as key_hash is deprecated)
+
 
     // 2. Overwrite User Profile (Consolidated JSON)
     const profile: UserProfile = {
@@ -61,7 +49,7 @@ export async function handleProvision(request: Request, env: Env): Promise<Respo
         JSON.stringify({
             success: true,
             user_uid: userUid,
-            key_hash: keyHash,
+
             initial_credits: initialCredits,
             tier: userTier,
             _uniskill: {
@@ -94,8 +82,6 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
         // 支持多种命名方式，优先使用 total_credits
         totalCredits = body.total_credits ?? body.new_credits ?? body.credits;
         newTier = body.new_tier || body.tier;
-        keyHash = body.key_hash || body.hash;
-        oldKeyHash = body.old_key_hash || body.old_hash;
         type = body.type;
         username = body.username;
 
@@ -142,19 +128,9 @@ export async function handleSyncCache(request: Request, env: Env): Promise<Respo
         );
     }
 
-    // 1. [物理销毁] 如果提供了旧 Hash，立即从 KV 中抹除映射 (清理新旧两种格式)
-    if (oldKeyHash) {
-        console.log(`[Admin] Revoking old key mapping (Dual cleanup): ${oldKeyHash}`);
-        await Promise.all([
-            env.UNISKILL_KV.delete(SkillKeys.authHash(oldKeyHash)),
-            env.UNISKILL_KV.delete(SkillKeys.userUid(oldKeyHash))
-        ]);
-    }
+    // 1. [物理销毁] (Legacy key_hash cleanup logic removed)
+    // 2. [建立新映射] (Legacy key_hash mapping logic removed)
 
-    // 2. [建立新映射] 建立 Hash -> UID 的映射 (New Format: auth:hash:{hash})
-    if (keyHash) {
-        await env.UNISKILL_KV.put(SkillKeys.authHash(keyHash), userUid);
-    }
     
     // 3. [全量覆盖] 更新 User Profile (Overwrite Profile)
     // 根据用户架构原则：控制台会同时传递最新的 credits 和 tier，直接覆盖以减少读取开销。

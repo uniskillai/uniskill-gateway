@@ -7,35 +7,6 @@ const getSupabaseClient = (env: any) => {
     return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
 };
 
-/**
- * Fetch the user's data (tier and credits) from the 'profiles' table
- * Returns default values if the record is missing.
- */
-export const fetchUserDataFromDB = async (
-    keyHash: string,
-    env: any
-): Promise<{ user_uid: string, tier: string; credits: number; username?: string }> => {
-    const supabase = getSupabaseClient(env);
-
-    // 查询 profiles 表
-    const { data, error } = await supabase
-        .from("profiles")
-        .select("user_uid, tier, credits, username") 
-        .eq("key_hash", keyHash)
-        .single();
-
-    if (error) {
-        console.error("[DB Fallback] Supabase query error:", error.message);
-        return { user_uid: "00000000-0000-0000-0000-000000000000", tier: "FREE", credits: 0, username: "anonymous" };
-    }
-
-    return {
-        user_uid: data?.user_uid || "00000000-0000-0000-0000-000000000000",
-        tier: data?.tier?.toUpperCase() || "FREE",
-        credits: typeof data?.credits === "number" ? data.credits : 0,
-        username: data?.username || "anonymous"
-    };
-};
 
 /**
  * Fetch the user's data (tier and credits) from the 'profiles' table using UID.

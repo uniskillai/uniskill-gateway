@@ -7,18 +7,18 @@
 import { executeCliSkill } from "../skills/execute-cli";
 import { executeSkill } from "../engine/executor"; // 保持对 HTTP/Native 引擎的引用
 import { errorResponse, corsHeaders } from "../utils/response";
-import { getUserUid, getProfile } from "../utils/billing";
+import { getProfile } from "../utils/billing";
 import { checkRateLimit } from "../rateLimit"; // 🌟 修复：从正确模块导入
-import { hashKey } from "../utils/auth";
+
 import { SkillParser } from "../engine/parser";
 import { SkillKeys } from "../utils/skill-keys";
-import { recordSkillCall } from "../utils/stats";
+
 import type { Env } from "../index";
 import type { 
   CliImplementation, 
   CliExecutionContext, 
   CliExecutionResult,
-  ExecutionStatus
+
 } from "../types/cli";
 
 // ============================================================
@@ -35,17 +35,6 @@ interface SkillManifest {
     base_fee_cents: number;
     per_second_cents?: number;
   };
-}
-
-interface BillingEvent {
-  skill_name: string;
-  payer_id: string;
-  status: ExecutionStatus;
-  base_fee_cents: number;
-  infrastructure_fee_cents: number;
-  duration_ms: number;
-  timestamp: string;
-  metadata?: any;
 }
 
 // ============================================================
@@ -132,8 +121,9 @@ export async function handleExecuteSkill(request: Request, env: Env, ctx: Execut
       }
     }
 
-    // 6. 异步发送计费事件 (非阻塞，使用新版 BillingEvent 格式)
-    ctx.waitUntil(enqueueBillingEvent(env, manifest, payer_id, executionResult));
+    // 6. 记账与扣费 (直连 Supabase RPC，同步执行以确保 Durable Object 上下文中也能可靠触发)
+    // 注意：ctx.waitUntil 在 Durable Object 内部可能不可靠，因此改为 await 直接调用
+    await enqueueBillingEvent(env, manifest, payer_id, executionResult);
 
     // 7. 返回增强型标准化响应
     const statusCode = executionResult.status === 'SUCCESS' ? 200 : 500;
@@ -182,93 +172,56 @@ async function fetchSecretsFromVault(env: Env, payerId: string, skillName: strin
 }
 
 // ============================================================
-// 辅助函数：计费队列分发 (基于规范化后的 Skill Name)
+// 辅助函数：直连 Supabase 计费 (不依赖消息队列)
 // ============================================================
 
 async function enqueueBillingEvent(env: Env, manifest: SkillManifest, payerId: string, result: CliExecutionResult) {
   const durationMs = result.duration_ms || 0;
-  const durationSeconds = Math.ceil(durationMs / 1000);
-  const perSecondFee = manifest.cost.per_second_cents ?? 0;
+  const costCredits = manifest.cost.base_fee_cents;
 
-  // 基础设施计费逻辑：仅成功时收取按秒能耗费，失败仅收基础费
-  const infraFee = result.status === 'SUCCESS' ? perSecondFee * durationSeconds : 0;
-  const totalCost = manifest.cost.base_fee_cents + infraFee;
+  const supabaseUrl = (env as any).SUPABASE_URL;
+  const supabaseKey = (env as any).SUPABASE_SERVICE_ROLE_KEY || (env as any).SUPABASE_ANON_KEY;
 
-  // ── 核心修复：如果 Queue 不可用，降级为直接写入 Supabase ──
-  if (!env.BILLING_QUEUE) {
-    console.log(`[execute-skill] No BILLING_QUEUE found, falling back to direct Supabase recording.`);
-    
-    // 获取当前余额并计算新余额
-    const profile = await getProfile(env.UNISKILL_KV, payerId, env);
-    const costCredits = totalCost / 100;
-    const newBalance = Math.round((profile.credits - costCredits) * 100) / 100;
-    
-    try {
-      // 1. 记录日志 (RPC)
-      await recordSkillCall(
-        env,
-        payerId,
-        manifest.skill_name,
-        crypto.randomUUID(), // request_id
-        totalCost,
-        'credits',
-        {
-          status_code: result.status === 'SUCCESS' ? 200 : 500,
-          execution_status: result.status === 'SUCCESS' ? 'SUCCESS' : 'FAILED',
-          error_message: result.message || null,
-          latency_ms: durationMs,
-          metadata: {
-            display_name: manifest.display_name,
-            infra_fee: infraFee,
-            base_fee: manifest.cost.base_fee_cents
-          }
-        },
-        manifest.cost.base_fee_cents,
-        manifest.display_name
-      );
-
-      // 2. 呼叫 Webhook 扣除积分 (新主权身份：payerId 即钱包地址)
-      if (env.ADMIN_KEY && payerId) {
-        const webhookUrl = env.VERCEL_WEBHOOK_URL || "https://uniskill.ai/api/webhook/sync-credits";
-        await fetch(webhookUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${env.ADMIN_KEY}`,
-          },
-          body: JSON.stringify({ 
-            hash: payerId, // 传递钱包地址
-            newBalance, 
-            skillName: manifest.skill_name, 
-            amount: -costCredits
-          }),
-        });
-        console.log(`[execute-skill] Sync webhook called for wallet: ${payerId}, newBalance: ${newBalance}`);
-      }
-    } catch (err) {
-      console.error(`[execute-skill] Direct Supabase logging or webhook failed:`, err);
-    }
+  if (!supabaseUrl || !supabaseKey) {
+    console.error('[execute-skill] Missing Supabase credentials, billing skipped.');
     return;
   }
 
-  const event: BillingEvent = {
-    skill_name: manifest.skill_name, // 对齐系统主键
-    payer_id: payerId,
-    status: result.status,
-    base_fee_cents: manifest.cost.base_fee_cents,
-    infrastructure_fee_cents: infraFee,
-    duration_ms: durationMs,
-    timestamp: new Date().toISOString(),
-    metadata: {
-      display_name: manifest.display_name,
-      execution_status: result.status
-    }
+  // 直接使用 fetch 调用 Supabase RPC，绕过 JS 客户端库，
+  // 并且不传 p_source_skill_uid，避免两个同名 RPC 重载产生 PGRST203 歧义错误
+  const rpcPayload = {
+    p_user_uid:         payerId,
+    p_skill_name:       manifest.skill_name,
+    p_payment_type:     'credits',
+    p_request_id:       crypto.randomUUID(),
+    p_cost:             costCredits,
+    p_status_code:      result.status === 'SUCCESS' ? 200 : 500,
+    p_execution_status: result.status === 'SUCCESS' ? 'SUCCESS' : 'FAILED',
+    p_error_message:    result.message || null,
+    p_latency_ms:       durationMs,
+    p_metadata:         { display_name: manifest.display_name },
+    p_display_name:     manifest.display_name,
   };
 
   try {
-    await env.BILLING_QUEUE.send(event);
+    const resp = await fetch(`${supabaseUrl}/rest/v1/rpc/record_skill_usage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey':        supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+      },
+      body: JSON.stringify(rpcPayload),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      console.error(`[execute-skill] Billing RPC HTTP ${resp.status}: ${errText}`);
+    } else {
+      console.log(`[execute-skill] Billing recorded: skill=${manifest.skill_name} user=...${payerId.slice(-6)} cost=${costCredits}`);
+    }
   } catch (err) {
-    console.error(`[execute-skill] Billing push failed:`, err);
+    console.error(`[execute-skill] Billing fetch failed:`, err);
   }
 }
 
